@@ -1,0 +1,2 @@
+import { Button,StatusBanner } from "@localnote/ui";
+export function ConflictBanner({onReload,onKeepLocal}:{onReload:()=>void;onKeepLocal:()=>void}){return <StatusBanner className="conflict"><strong>External modification detected.</strong><span>Reload to discard local changes, or keep local to stop autosave.</span><span><Button onClick={onReload}>Reload (discard local)</Button><Button onClick={onKeepLocal}>Keep local</Button></span></StatusBanner>}

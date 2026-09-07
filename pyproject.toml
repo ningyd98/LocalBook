@@ -1,0 +1,64 @@
+[project]
+name = "localnote-server"
+version = "0.2.0"
+description = "LocalNote Server — FastAPI API for a Markdown-first local note server (M1: Vault safe read/write core + watcher)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "UNLICENSED" }
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.3,<3",
+    "httpx>=0.27,<1",
+    # Watcher backend. Declared as a locked runtime dependency per PLAN-M1
+    # §4.5/§7; server.vault.watcher still degrades to a visible
+    # "unavailable" state if the import is missing at runtime.
+    "watchdog>=5,<7",
+    # M3 frontmatter YAML parsing (PLAN-M3 §5.1). Only yaml.safe_load is
+    # used; frontmatter.py degrades to a parse_error when the import fails.
+    "PyYAML>=6,<7",
+    # M8 local scheduler (PLAN-M8 §5.1): APScheduler BackgroundScheduler is
+    # the preferred single-process backend. Locked below 4.x. When the import
+    # is missing at runtime the scheduler degrades to the asyncio fallback.
+    "APScheduler>=3.10,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2,<9",
+    "pytest-asyncio>=0.23,<1",
+    "ruff>=0.6,<1",
+]
+
+# Mirror of `dev` for `uv sync --dev` (uv's --dev syncs this group; the
+# optional-dependencies extra above keeps the pip fallback
+# `pip install -e '.[dev]'` working too).
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.2,<9",
+    "pytest-asyncio>=0.23,<1",
+    "ruff>=0.6,<1",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["server*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/backend"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "perf: performance benchmark (opt-in; also gated by LOCALNOTE_RUN_PERF=1)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

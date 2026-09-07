@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.vite/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local dev caches (uv / pnpm / corepack stores kept inside the workspace during sandboxed dev)
+.cache/
+.corepack/
+.uv-cache/
+.pnpm-store/
+.vite/
+
+# Builds
+dist/
+build/
+*.tsbuildinfo
+
+# Derived / user data — never commit
+.localnote/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

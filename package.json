@@ -1,0 +1,33 @@
+{
+  "name": "localnote",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LocalNote Server — Markdown-first local note server (Phase 0 bootstrap).",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22 <23",
+    "pnpm": ">=9 <10"
+  },
+  "scripts": {
+    "dev": "bash scripts/dev.sh",
+    "build": "pnpm --filter @localnote/web build",
+    "typecheck": "pnpm --filter @localnote/protocol typecheck && pnpm --filter @localnote/ui typecheck && pnpm --filter @localnote/editor typecheck && pnpm --filter @localnote/markdown typecheck && pnpm --filter @localnote/workspace typecheck && pnpm --filter @localnote/web typecheck",
+    "test:web": "pnpm --filter @localnote/web test",
+    "test:backend": "bash -c 'python -m pytest -q'",
+    "check": "bash scripts/check.sh"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "jsdom": "^25.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "~5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "license": "UNLICENSED"
+}

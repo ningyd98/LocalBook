@@ -1,0 +1,5 @@
+import { Button,Panel } from "@localnote/ui";
+import { FileTree } from "./FileTree";
+import { WorkspaceStatus } from "./WorkspaceStatus";
+import type { FileTreeState } from "@localnote/workspace";
+export function Sidebar({tree,onRetry,onToggle,onOpen}:{tree:FileTreeState;onRetry:()=>void;onToggle:(p:string)=>void;onOpen:(p:string)=>void}){return <Panel className="sidebar"><header><h2>Files</h2><Button onClick={onRetry}>Refresh</Button></header>{tree.status==="loading"&&<WorkspaceStatus message="Loading Vault files…"/>}{tree.status==="not_configured"&&<WorkspaceStatus message="Vault is not configured. Set LOCALNOTE_VAULT__ROOT to an existing folder."/>}{tree.status==="unavailable"&&<WorkspaceStatus message="Vault is unavailable."/>}{tree.status==="error"&&<WorkspaceStatus message={tree.error?.message??"Unable to load files."}/>} {tree.status==="ready"&&(tree.entries.length?<FileTree entries={tree.entries} expanded={tree.expandedPaths} onToggle={onToggle} onOpen={onOpen}/>:<WorkspaceStatus message="No files in this Vault."/>)}</Panel>}

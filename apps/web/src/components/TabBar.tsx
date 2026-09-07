@@ -1,0 +1,5 @@
+import { Button, Badge } from "@localnote/ui";
+import type { WorkspaceTab, EditorSession } from "@localnote/workspace";
+export function TabBar({ tabs, active, sessions, onActivate, onClose, onRetry }: { tabs: WorkspaceTab[]; active: string | null; sessions: Record<string, EditorSession>; onActivate: (p: string) => void; onClose: (p: string) => void; onRetry?: (p: string) => void }) {
+  return <div className="tabs" role="tablist">{tabs.map((tab) => { const session = sessions[tab.path]; const state = session?.saveState ?? (tab.loading ? "loading" : tab.error ? "error" : "saved"); return <div key={tab.path} className={tab.path === active ? "tab active" : "tab"}><Button role="tab" aria-selected={tab.path === active} onClick={() => onActivate(tab.path)}>{tab.title}{tab.dirty ? " •" : ""} <Badge>{state}</Badge></Button>{state === "error" && <Button onClick={() => onRetry?.(tab.path)} aria-label={`Retry saving ${tab.title}`}>Retry</Button>}<Button aria-label={`Close ${tab.title}`} onClick={() => onClose(tab.path)}>×</Button></div>; })}</div>;
+}

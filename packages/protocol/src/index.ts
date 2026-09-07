@@ -1,0 +1,79 @@
+export type HealthResponse = { status: "ok" };
+export type AIStatus = "not_configured" | "offline" | "connected";
+export interface AICapabilities { chat: boolean; embedding: boolean; rerank: boolean; }
+export interface DiscoveredModel { id: string; owned_by: string | null; capabilities: AICapabilities; }
+export type AIErrorCode = "not_configured" | "connection_refused" | "timeout" | "http_error" | "invalid_response" | "no_matching_model" | "unknown";
+export interface AIStatusResponse { status: AIStatus; provider: "omlx"; endpoint: string | null; qwen_model: string | null; models: DiscoveredModel[]; capabilities: AICapabilities; error_code: AIErrorCode | null; message: string | null; checked_at: string | null; }
+export type VaultFileKind = "file" | "directory";
+export interface VaultFileEntry { path: string; kind: VaultFileKind; size: number | null; sha256: string | null; }
+export interface VaultFileTreeResponse { root: string; entries: VaultFileEntry[]; generated_at: string; }
+export interface FileReadResponse { path: string; content_base64: string; byte_length: number; sha256: string; content_type: string | null; }
+export interface FileMutationResponse { path: string; sha256: string | null; byte_length: number | null; operation: "created" | "updated" | "deleted" | "moved"; }
+export type VaultErrorCode = "vault_not_configured" | "vault_unavailable" | "path_traversal" | "symlink_escape" | "not_found" | "already_exists" | "file_conflict" | "expected_hash_required" | "invalid_request" | "file_too_large" | "not_a_file" | "not_a_directory" | "atomic_write_failed" | "watcher_unavailable" | "index_unavailable" | "internal_error" | string;
+export interface VaultErrorBody { error: { code: VaultErrorCode; message: string; path: string | null }; }
+export type FrontmatterStatus = "none" | "ok" | "parse_error" | "unreadable";
+export type MetadataParseErrorKind = "yaml" | "unterminated" | "non_dict" | "decode" | "yaml_unavailable" | "other";
+export interface MetadataParseError { kind: MetadataParseErrorKind; message: string; line: number | null; }
+export interface NoteMetadataResponse { path: string; title: string; frontmatter_status: FrontmatterStatus; properties: Record<string, unknown>; tags: string[]; parse_error: MetadataParseError | null; available: boolean; }
+export type LinkKind = "wikilink" | "embed" | "web";
+export interface LinkRef { target: string; raw: string; kind: LinkKind; display: string | null; section: string | null; block: string | null; resolved_path: string | null; broken: boolean; ambiguous: boolean; candidates: string[]; }
+export interface NoteLinksResponse { path: string; outgoing: LinkRef[]; broken_count: number; generated_at: string; }
+export interface BacklinkRef { source_path: string; title: string; text: string | null; }
+export interface BacklinksResponse { path: string; backlinks: BacklinkRef[]; count: number; generated_at: string; }
+export interface SearchHit { path: string; title: string; snippet: string; matched_terms: string[]; score: number; }
+export interface SearchResponse { query: string; hits: SearchHit[]; total: number; degraded: boolean; skipped_notes: number; generated_at: string; }
+export interface IndexRebuildResponse { indexed: number; skipped: number; failed: number; duration_ms: number; ready: boolean; generated_at: string; }
+export type GraphNodeType = "note" | "tag";
+export type GraphEdgeType = "link" | "backlink" | "tag";
+export type GraphScope = "global" | "local" | "tag";
+export interface GraphNode { id: string; type: GraphNodeType; label: string; path: string | null; title: string | null; tag: string | null; tag_folded: string | null; }
+export interface GraphEdge { id: string; source: string; target: string; type: GraphEdgeType; directed: boolean; raw: string | null; resolved_path: string | null; section: string | null; block: string | null; broken: boolean; ambiguous: boolean; candidates: string[]; context: string | null; }
+export interface GraphPage { limit: number; offset: number; next_offset: number | null; total_nodes: number; total_edges: number; truncated: boolean; }
+export interface GraphResponse { model: "note-tag-v1"; scope: GraphScope; root: string | null; nodes: GraphNode[]; edges: GraphEdge[]; page: GraphPage; generated_at: string; }
+export interface GraphQuery { limit?: number; offset?: number; tag?: string | null; include_broken?: boolean; depth?: number; direction?: "both" | "outgoing" | "incoming"; }
+export interface AIContextCitation { path: string; heading: string | null; quote: string; }
+export interface AIChatRequest { note_path?: string | null; question: string; context_note_paths?: string[]; }
+export interface AIChatResponse { answer: string; citations: AIContextCitation[]; prompt_version: string; model: string; degraded: boolean; }
+export interface AISummarizeRequest { note_path: string; }
+export interface AISummarizeResponse { note_path: string; summary: string; key_points: string[]; prompt_version: string; model: string; degraded: boolean; }
+export interface AITagSuggestion { name: string; reason: string; }
+export interface AITagsRequest { note_path: string; }
+export interface AITagsResponse { note_path: string; tags: AITagSuggestion[]; prompt_version: string; model: string; degraded: boolean; }
+export interface AIRelatedRequest { note_path: string; limit?: number; }
+export interface AIRelatedItem { path: string; title: string; reason: string; score: number; }
+export interface AIRelatedResponse { note_path: string; related: AIRelatedItem[]; candidates_considered: number; prompt_version: string; model: string | null; degraded: boolean; }
+export interface AIExtractTodosRequest { note_path: string; }
+export interface AITodoItem { text: string; source_heading: string | null; due_hint: string | null; }
+export interface AIExtractTodosResponse { note_path: string; items: AITodoItem[]; prompt_version: string; model: string; degraded: boolean; }
+export interface AIClassifyRequest { note_path: string; labels?: string[]; }
+export interface AIClassifyResponse { note_path: string; label: string; confidence: number; alternatives: string[]; prompt_version: string; model: string; degraded: boolean; }
+export interface AIErrorResponse { error: { code: string; message: string; path: string | null }; meta?: { prompt_version?: string; model?: string }; }
+
+export type ActionType = "add_tags" | "remove_tags" | "add_link" | "create_note" | "patch_note" | "move_note";
+export type PermissionLevel = 0 | 1 | 2;
+export type JobStatus = "planned" | "preflighted" | "captured" | "awaiting_confirmation" | "executing" | "validating" | "committed" | "rejected" | "rolled_back" | "failed" | "conflict" | "undone" | "undo_unavailable" | "rollback_failed";
+export type PolicyDecision = "allow" | "deny" | "confirm";
+export interface ActionDTO { action_id: string; action: ActionType; permission_level: PermissionLevel; file: string; target_file?: string | null; tags?: string[]; link_target?: string | null; reason: string; expected_sha256?: string | null; }
+export interface PolicyResultDTO { decision: PolicyDecision; level: number; action_type: string; matched_rules: string[]; reasons: string[]; budgets?: Record<string, number>; }
+export interface DiffEntryDTO { path: string; action_id?: string; operation: string; before_hash: string | null; after_hash: string | null; before_size: number; after_size: number; unified_diff?: string | null; hunks?: Array<{ old_text?: string; new_text?: string; old_start?: number; new_start?: number }>; status?: "proposed" | "pending" | "accepted" | "rejected"; }
+export interface JobSummaryDTO { job_id: string; task_type: string; status: JobStatus; start_time: string | null; end_time?: string | null; model?: string | null; action_count?: number; }
+export interface JobErrorInfo { code: string; message: string; [key: string]: unknown; }
+export interface JournalSummaryEntryDTO { seq: number; operation: "create" | "update" | "move" | "undo"; path: string; before_exists: boolean; after_exists: boolean; before_hash: string | null; after_hash: string | null; state: "pending" | "applied" | "rolled_back"; }
+export interface JobDetailDTO extends JobSummaryDTO { prompt_version?: string | null; files_read: string[]; proposed_actions: ActionDTO[]; executed_actions: ActionDTO[]; diff: DiffEntryDTO[]; before_hash: Record<string, string | null>; after_hash: Record<string, string | null>; policy?: PolicyResultDTO | null; error?: string | JobErrorInfo | null; journal_summary?: JournalSummaryEntryDTO[]; }
+export interface HistoryPageDTO { items: JobSummaryDTO[]; total: number; limit: number; offset: number; }
+export interface JobCreateRequest { task_type: "daily_organizer" | "weekly_review" | "manual"; permission_level: PermissionLevel; scope: { paths: string[]; max_files?: number; max_chars?: number }; execute?: boolean; }
+export interface JobActionRequest { action_ids?: string[]; confirm: boolean; }
+export interface UndoResponseDTO { job_id: string; status: "undone"; restored: string[]; error?: string | null; }
+// ---------------------------------------------------------------------------
+// M8 scheduler DTO mirror (server source of truth: server/scheduler/*)
+// ---------------------------------------------------------------------------
+export type SchedulerTaskId = "daily_organizer" | "weekly_review" | "index_consistency";
+export type SchedulerTrigger = "scheduled" | "manual" | "startup";
+export type SchedulerRunStatus = "queued" | "running" | "previewed" | "committed" | "skipped_duplicate" | "failed" | "timed_out" | "recovery_required";
+export type SchedulerErrorCode = "scheduler_disabled" | "scheduler_unavailable" | "unknown_task" | "invalid_schedule" | "duplicate_run" | "job_timeout" | "job_in_progress" | "recovery_required" | "recovery_not_safe" | "scheduler_config_invalid" | "history_cleanup_failed" | "index_check_failed" | "network_exposure_warning" | string;
+export interface SchedulerJobStatus { id: SchedulerTaskId; enabled: boolean; trigger: "cron" | "interval"; next_run_at: string | null; last_status: SchedulerRunStatus | null; last_run_id?: string | null; last_message?: string | null; last_finished_at?: string | null; }
+export interface SchedulerStatusResponse { enabled: boolean; running: boolean; backend: string; degraded: boolean; degraded_reason?: string | null; timezone: string; network_exposure_warning: boolean; network_exposure_advice?: string | null; jobs: SchedulerJobStatus[]; active_runs: number; recovery_required: number; history_retention_days: number; }
+export interface SchedulerRunDTO { run_id: string; task: SchedulerTaskId; status: SchedulerRunStatus; trigger: SchedulerTrigger; agent_job_id?: string | null; scheduled_for?: string | null; started_at?: string | null; finished_at?: string | null; policy?: PolicyResultDTO | null; error_code?: string | null; message?: string | null; detail?: Record<string, unknown> | null; }
+export interface SchedulerRunsPageDTO { items: SchedulerRunDTO[]; total: number; limit: number; offset: number; }
+export interface SchedulerRunRequest { confirm?: boolean; auto_level2?: boolean; scope?: { paths: string[]; max_files?: number; max_chars?: number } | null; }
+export type SchedulerRecoveryAction = "diagnose" | "rollback_if_safe" | "retry_preview";

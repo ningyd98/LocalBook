@@ -1,0 +1,22 @@
+{
+  "name": "@localnote/protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared API DTO types between LocalNote backend (server/ai/schemas.py is the Python contract source) and frontend. Phase 0: types only, no runtime code.",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "~5.7.2"
+  },
+  "license": "UNLICENSED"
+}

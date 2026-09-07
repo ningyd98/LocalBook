@@ -1,0 +1,16 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "Qwen3.5-4B-Instruct-4bit",
+      "object": "model",
+      "owned_by": "omlx"
+    },
+    {
+      "id": "text-embedding-nomic-embed-text-v1.5",
+      "object": "model",
+      "owned_by": "omlx",
+      "capabilities": { "embedding": true, "chat": false, "rerank": false }
+    }
+  ]
+}
