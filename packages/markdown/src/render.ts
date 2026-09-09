@@ -6,7 +6,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import rehypeStringify from "rehype-stringify";
 import type { Element, Root, RootContent } from "hast";
-import { parseWikilink, preprocessWikilinks } from "@localnote/protocol";
+import { markTaskCheckboxes, parseWikilink, preprocessWikilinks } from "@localnote/protocol";
 
 /**
  * Markdown render pipeline (PLAN-ATTACHMENTS v1.1 §ATT-14).
@@ -44,6 +44,9 @@ export const markdownSanitizeSchema = {
   attributes: {
     ...defaultSchema.attributes,
     img: [...(defaultSchema.attributes?.img ?? []), "alt", "title"],
+    // Task-list toggles are spans the preprocessor emits; the ordinal and
+    // checked state are the only extra data they carry.
+    span: [...(defaultSchema.attributes?.span ?? []), "className", "dataTaskIndex", "dataTaskChecked"],
   },
   protocols: {
     ...defaultSchema.protocols,
@@ -119,7 +122,7 @@ export function renderMarkdown(source: string, options?: RenderMarkdownOptions):
     const resolveUrl = options?.resolveUrl ?? ((url: string) => url);
     // ``[[X]]`` becomes an anchor before parsing; the resolver below decides
     // whether it stays a plain link (existing note) or becomes create-able.
-    const prepared = preprocessWikilinks(source);
+    const prepared = preprocessWikilinks(markTaskCheckboxes(source));
     // ``runSync`` on a shared processor is safe: the resolver is passed as
     // data (never captured in a plugin closure), so concurrent calls cannot
     // observe each other's callback.

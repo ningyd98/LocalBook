@@ -94,6 +94,9 @@ AI history 等未来只作为**可删除重建的派生数据**。
     直接打开（与索引的 basename 解析规则一致）。
   - **标题快捷键与工具条**：`Ctrl/⌘+1…6` 设为对应级别、`Ctrl/⌘+0` 取消，同一级别
     再按一次切回正文；编辑器工具栏也提供 H1–H6 与「正文」按钮。
+  - **Obsidian 式任务清单**：`- [ ]` / `- [x]` 在预览与「实时」模式里渲染成可点击
+    复选框，点一下即改写源码标记（完成项自动加删除线）；围栏代码块内的
+    `- [ ]` 不参与，改动走既有字节保真 + `expected_sha256` 保存通道。
   预览管线使用 `rehype-raw` 在 `rehype-sanitize` 之前解析 Markdown 内嵌 HTML，随后严格清洗脚本、事件属性和危险 URL；这样保留标准 Markdown HTML 展示能力，同时确保仅安全 HTML 进入 DOM。
 - **M3 只读派生层 + M4 SQLite 派生库**（后端 + 前端）：
   - frontmatter/Properties 只读解析（BOM/CRLF、未知字段逐字保留、tags 规范化、

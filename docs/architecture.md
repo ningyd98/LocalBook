@@ -223,6 +223,14 @@ M12 单栏实时预览（Live Preview，`packages/editor/src/livePreviewExt.ts`�
 保存仍走字节保真通道；原有「编辑 / 预览 / 分屏」三种视图全部保留，新增
 `editorMode: "live"`。
 
+M13 任务清单点击切换（`packages/protocol` 纯函数 + 预览/实时两处渲染）：
+`taskItems`/`toggleTaskInSource`/`markTaskCheckboxes` 定位 `- [ ]`/`- [x]` 标记
+（跳过围栏代码块，文档顺序即 remark-gfm 的复选框顺序）；预览把标记替换为带
+序号的 `span.task-toggle`，点击只改对应标记；「实时」模式用扫描结果生成
+CodeMirror checkbox widget（不依赖语法树 TaskList 节点，未新增依赖），并阻止
+mousedown 以免光标跳行导致 widget 重建。改动只落在正文文本，保存仍走
+字节保真 + `expected_sha256` 通道。
+
 尚未放行（保持禁止，不得“顺手”实现）：
 
 - Graph 物化（独立 graph 表/迁移）与写路径；自动修复 broken/ambiguous；
@@ -266,7 +274,7 @@ server/graph/                  M5 只读 Graph 服务 + DTO（查询时从 M4 �
 server/{agents,policies,actions,history,recovery}/  M7 受控 Agent/Policy/History/事务/Undo
 server/scheduler/              M8 本地调度器（backend/runner/index_job/service；只调度不写业务）
 server/api/routes/scheduler.py M8 scheduler HTTP 编排（status/run/runs/recovery）
-packages/editor/src/livePreviewExt.ts  M12 单栏实时预览装饰层（不改 bytes、不改解析器）
+packages/editor/src/livePreviewExt.ts  M12 单栏实时预览 + M13 任务复选框装饰层（不改 bytes、不改解析器）
 ```
 
 详细目录见 PLAN.md 第 5 节与 README.md「目录概览」。

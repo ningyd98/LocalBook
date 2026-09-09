@@ -1,4 +1,4 @@
-# LocalNote 开发路线图（M0–M12）
+# LocalNote 开发路线图（M0–M13）
 
 > 本文档给出各里程碑的入口、目标、依赖、验收门槛，以及**不可提前实现**
 > 列表。当前阶段：**M9–M12 实现完成**（M9 用户直传附件已通过独立审计；
@@ -299,6 +299,15 @@ PostgreSQL/Redis/Celery/Docker/云 AI/远程数据库/Electron/Obsidian
 - 视图切换新增「实时」，原有编辑/预览/分屏三种视图保留
   （`editorMode: "source" | "live" | "preview" | "split"`）。
 - 正文 bytes 不被改写，保存仍走字节保真 + `expected_sha256` 通道。
+
+## M13 — 任务清单点击切换（已实现）
+
+- `- [ ]` / `- [x]` 在预览与「实时」模式渲染为可点击复选框；点击即改写对应标记，
+  完成项加删除线。
+- 标记定位是纯函数（`packages/protocol`），跳过围栏代码块；预览用
+  `span.task-toggle` + 序号，实时模式用 CodeMirror widget，两处点击都映射到
+  同一个文档序号。
+- 未新增运行时依赖；正文 bytes 语义与保存通道不变。
 
 ## 变更与审计
 

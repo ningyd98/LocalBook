@@ -203,6 +203,81 @@ function wikilinkToMarkdown(raw: string): string {
   const suffix = parsed.section ? `#${parsed.section}` : parsed.block ? `^${parsed.block}` : "";
   return `[${label}${suffix}](wikilink:${encodeURIComponent(parsed.target)})`;
 }
+/** One GFM task-list item found in the source, in document order. */
+export interface TaskItemRef {
+  /** Ordinal among all task items in the document (0-based). */
+  index: number;
+  /** Offset of the `[` of the checkbox marker. */
+  from: number;
+  /** Offset just after the `]`. */
+  to: number;
+  /** True when the item is `[x]` / `[X]`. */
+  checked: boolean;
+}
+
+const TASK_LINE_RE = /^([ \t]*(?:[-*+]|\d+[.)])[ \t]+)\[([ xX])\](?=[ \t]|$)/;
+
+/**
+ * Locate every GFM task marker (`- [ ]` / `- [x]`) outside fenced code blocks.
+ * Ordinals are document order, which is the order remark-gfm renders its
+ * checkboxes in, so the nth rendered checkbox maps to the nth item here.
+ */
+export function taskItems(source: string): TaskItemRef[] {
+  const items: TaskItemRef[] = [];
+  let offset = 0;
+  let fence: string | null = null;
+  for (const line of source.split("\n")) {
+    const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[1]![0]!;
+      fence = fence && fence === marker ? null : fence === null ? marker : fence;
+      offset += line.length + 1;
+      continue;
+    }
+    if (!fence) {
+      const match = TASK_LINE_RE.exec(line);
+      if (match) {
+        const markerStart = offset + match[1]!.length;
+        items.push({
+          index: items.length,
+          from: markerStart,
+          to: markerStart + 3,
+          checked: match[2]!.toLowerCase() === "x",
+        });
+      }
+    }
+    offset += line.length + 1;
+  }
+  return items;
+}
+
+/** Flip one task marker in `source`; returns the new text (or the input when unchanged). */
+export function toggleTaskInSource(source: string, index: number): string {
+  const item = taskItems(source)[index];
+  if (!item) return source;
+  const marker = item.checked ? "[ ]" : "[x]";
+  return `${source.slice(0, item.from)}${marker}${source.slice(item.to)}`;
+}
+
+/**
+ * Replace GFM task markers with inline spans carrying their ordinal, so the
+ * rendered preview can map a click back to the exact source position. The
+ * original `[ ]` / `[x]` text is kept inside the span (remark then adds its own
+ * checkbox, which the preview hides in favour of the span).
+ */
+export function markTaskCheckboxes(source: string): string {
+  const items = taskItems(source);
+  if (!items.length) return source;
+  let out = "";
+  let cursor = 0;
+  for (const item of items) {
+    out += source.slice(cursor, item.from);
+    out += `<span class="task-toggle" data-task-index="${item.index}" data-task-checked="${item.checked}">${source.slice(item.from, item.to)}</span>`;
+    cursor = item.to;
+  }
+  return out + source.slice(cursor);
+}
+
 export type VaultErrorCode = "vault_not_configured" | "vault_unavailable" | "path_traversal" | "symlink_escape" | "not_found" | "already_exists" | "file_conflict" | "expected_hash_required" | "invalid_request" | "file_too_large" | "not_a_file" | "not_a_directory" | "atomic_write_failed" | "watcher_unavailable" | "index_unavailable" | "internal_error" | string;
 export interface VaultErrorBody { error: { code: VaultErrorCode; message: string; path: string | null }; }
 export type FrontmatterStatus = "none" | "ok" | "parse_error" | "unreadable";

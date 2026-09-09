@@ -12,7 +12,6 @@
 import { EditorView, Decoration, WidgetType } from "@codemirror/view";
 import type { DecorationSet } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
-import { RangeSetBuilder } from "@codemirror/state";
 import type { EditorState, Extension, Range } from "@codemirror/state";
 
 
@@ -26,6 +25,8 @@ export interface LivePreviewOptions {
   notePath?: string | null;
   /** Click on a rendered link/wikilink. */
   onOpenLink?: (target: string, kind: "link" | "wikilink") => void;
+  /** Click on a task checkbox (index is the document-order ordinal). */
+  onToggleTask?: (index: number) => void;
 }
 
 const hide = Decoration.replace({});
@@ -61,6 +62,49 @@ class ImageWidget extends WidgetType {
 }
 
 /** True when the caret sits on the same line as `pos`. */
+/** Task markers in document order, ignoring fenced code blocks. */
+function scanTasks(text: string): { from: number; to: number; checked: boolean }[] {
+  const found: { from: number; to: number; checked: boolean }[] = [];
+  let offset = 0;
+  let fence: string | null = null;
+  for (const line of text.split("\n")) {
+    const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[1]![0]!;
+      fence = fence && fence === marker ? null : fence === null ? marker : fence;
+      offset += line.length + 1;
+      continue;
+    }
+    if (!fence) {
+      const match = /^([ \t]*(?:[-*+]|\d+[.)])[ \t]+)\[([ xX])\](?=[ \t]|$)/.exec(line);
+      if (match) {
+        const start = offset + match[1]!.length;
+        found.push({ from: start, to: start + 3, checked: match[2]!.toLowerCase() === "x" });
+      }
+    }
+    offset += line.length + 1;
+  }
+  return found;
+}
+
+class TaskCheckboxWidget extends WidgetType {
+  constructor(readonly index: number, readonly checked: boolean) { super(); }
+  eq(other: TaskCheckboxWidget) { return other.index === this.index && other.checked === this.checked; }
+  toDOM() {
+    const box = document.createElement("span");
+    box.className = `cm-lp-task${this.checked ? " cm-lp-task-done" : ""}`;
+    box.setAttribute("data-task-index", String(this.index));
+    box.setAttribute("role", "checkbox");
+    box.setAttribute("aria-checked", this.checked ? "true" : "false");
+    box.setAttribute("tabindex", "0");
+    // A checkbox click must not move the caret: moving it would activate the
+    // line, which removes the widget mid-click and swallows the toggle.
+    box.addEventListener("mousedown", (event) => { event.preventDefault(); event.stopPropagation(); });
+    return box;
+  }
+  ignoreEvent() { return false; }
+}
+
 function lineIsActive(state: EditorState, pos: number): boolean {
   const line = state.doc.lineAt(pos);
   return state.selection.ranges.some((range) => range.from <= line.to && range.to >= line.from);
@@ -127,6 +171,7 @@ export function buildDecorations(state: EditorState, options: LivePreviewOptions
       }
       if (name === "ListMark") { push(from, to, Decoration.mark({ class: "cm-lp-listmark" })); return; }
 
+
       if (name === "Image") {
         if (active) return;
         const parts = imageParts(state, node.node);
@@ -166,10 +211,17 @@ export function buildDecorations(state: EditorState, options: LivePreviewOptions
     },
   });
 
-  pending.sort((a, b) => a.from - b.from || a.to - b.to);
-  const builder = new RangeSetBuilder<Decoration>();
-  for (const range of pending) builder.add(range.from, range.to, range.value);
-  return builder.finish();
+  // Task markers come from the scanner (the base Markdown parser has no GFM
+  // TaskList node): the marker text is replaced by a clickable checkbox while
+  // the caret is elsewhere, and stays raw on the active line.
+  for (const [index, task] of scanTasks(state.doc.toString()).entries()) {
+    if (lineIsActive(state, task.from)) continue;
+    push(task.from, task.to, Decoration.replace({ widget: new TaskCheckboxWidget(index, task.checked) }));
+  }
+
+  // ``Decoration.set(..., true)`` sorts by the canonical range key, which
+  // handles overlapping marks/replacements at the same offset correctly.
+  return Decoration.set(pending, true);
 }
 
 /** Click handling for rendered links/images (delegated on the editor DOM). */
@@ -185,6 +237,13 @@ function clickHandler(options: LivePreviewOptions) {
         if (href.startsWith("wikilink:")) options.onOpenLink?.(decodeURIComponent(href.slice("wikilink:".length)), "wikilink");
         else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(href)) window.open(href, "_blank", "noreferrer");
         else options.onOpenLink?.(href, "link");
+        return true;
+      }
+      const task = target?.closest?.(".cm-lp-task") as HTMLElement | null;
+      if (task) {
+        event.preventDefault();
+        const index = Number(task.getAttribute("data-task-index"));
+        if (Number.isInteger(index) && index >= 0) options.onToggleTask?.(index);
         return true;
       }
       const image = target?.closest?.("figure.cm-lp-image");
@@ -226,6 +285,9 @@ export function livePreview(options: () => LivePreviewOptions): Extension {
       ".cm-lp-listmark": { color: "var(--accent)", fontWeight: "600" },
       ".cm-lp-quote": { borderLeft: "3px solid var(--accent)", paddingLeft: "12px", color: "var(--muted)" },
       ".cm-lp-hr": { borderBottom: "1px solid var(--border)" },
+      ".cm-lp-task": { display: "inline-block", width: "13px", height: "13px", marginRight: "6px", verticalAlign: "middle", border: "1.5px solid var(--subtle, #888)", borderRadius: "4px", cursor: "pointer", position: "relative" },
+      ".cm-lp-task-done": { background: "var(--accent, #7c6cff)", borderColor: "var(--accent, #7c6cff)" },
+      ".cm-lp-task-done:after": { content: "''", position: "absolute", left: "3px", top: "0px", width: "5px", height: "9px", border: "solid #fff", borderWidth: "0 2px 2px 0", transform: "rotate(45deg)" },
       ".cm-lp-image": { margin: "6px 0", display: "flex", flexDirection: "column", gap: "4px" },
       ".cm-lp-image img": { maxWidth: "100%", borderRadius: "7px", border: "1px solid var(--border)" },
       ".cm-lp-image figcaption": { fontSize: "11px", color: "var(--subtle)" },

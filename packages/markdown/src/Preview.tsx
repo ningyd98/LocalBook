@@ -26,9 +26,11 @@ export interface PreviewProps {
   wikilinkExists?: (target: string) => boolean;
   /** Click on a `[[wikilink]]`: open the note, or create it when missing. */
   onOpenWikilink?: (target: string) => void;
+  /** Click on a task checkbox: flip that item in the source. */
+  onToggleTask?: (index: number) => void;
 }
 
-export function Preview({ source, className, notePath, resolveResourceUrl, onDropFiles, onDragOver, onDragLeave, busy, wikilinkExists, onOpenWikilink }: PreviewProps) {
+export function Preview({ source, className, notePath, resolveResourceUrl, onDropFiles, onDragOver, onDragLeave, busy, wikilinkExists, onOpenWikilink, onToggleTask }: PreviewProps) {
   const html = useMemo(() => {
     if (!resolveResourceUrl) return renderMarkdown(source);
     return renderMarkdown(source, {
@@ -41,13 +43,21 @@ export function Preview({ source, className, notePath, resolveResourceUrl, onDro
     });
   }, [source, notePath, resolveResourceUrl]);
 
-  const click = onOpenWikilink
+  const click = onOpenWikilink || onToggleTask
     ? (event: MouseEvent<HTMLElement>) => {
-        const anchor = (event.target as HTMLElement | null)?.closest?.("a.wikilink");
-        if (!anchor) return;
+        const target = event.target as HTMLElement | null;
+        const toggle = target?.closest?.("span.task-toggle") as HTMLElement | null;
+        if (toggle && onToggleTask) {
+          event.preventDefault();
+          const index = Number(toggle.getAttribute("data-task-index"));
+          if (Number.isInteger(index) && index >= 0) onToggleTask(index);
+          return;
+        }
+        const anchor = target?.closest?.("a.wikilink");
+        if (!anchor || !onOpenWikilink) return;
         event.preventDefault();
-        const target = anchor.getAttribute("data-wikilink");
-        if (target) onOpenWikilink(target);
+        const value = anchor.getAttribute("data-wikilink");
+        if (value) onOpenWikilink(value);
       }
     : undefined;
 

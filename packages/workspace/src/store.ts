@@ -1,6 +1,6 @@
 import { readPreferences, persistPreferences, validatePreferences } from "./preferences";
 import { create } from "zustand";
-import { noteDirectory, relativeMarkdownReference, wikilinkCreatePath } from "@localnote/protocol";
+import { noteDirectory, relativeMarkdownReference, toggleTaskInSource, wikilinkCreatePath } from "@localnote/protocol";
 import type { WorkspaceApi, WorkspaceError, WorkspaceState, EditorSession, CaretInsertHandler } from "./types";
 
 /** JSON/base64 upload channel split (mirrors server `ATTACHMENT_JSON_MAX_BYTES`). */
@@ -324,6 +324,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         await get().loadTree();
       }
       return movedTo;
+    },
+    toggleTask: (path, index) => {
+      const session = get().sessions[path];
+      if (!session || session.encoding !== "utf8" || get().workspaceFrozen || get().vaultStale) return false;
+      const next = toggleTaskInSource(session.content, index);
+      if (next === session.content) return false;
+      get().updateContent(path, next);
+      return true;
     },
     ensureFolder: async (directory) => {
       const clean = directory.trim().replace(/^\/+/, "").replace(/\/+$/, "");
