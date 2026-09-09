@@ -13,15 +13,29 @@ import { defineConfig } from "vitest/config";
  */
 const proxyTarget = process.env.VITE_API_PROXY_TARGET ?? "http://127.0.0.1:3780";
 
+/**
+ * Hosts the dev server accepts when it is reached through a reverse proxy
+ * (nginx -> frpc -> 127.0.0.1:5173). Vite 5.4 blocks unknown Host headers
+ * with "Blocked request" unless they are listed here; `true` allows any host.
+ * The public entry point is protected by HTTP Basic Auth at the edge.
+ */
+const allowedHosts: true | string[] =
+  process.env.VITE_ALLOWED_HOSTS === "off" ? [] : true;
+
 export default defineConfig({
   plugins: [react()],
   server: {
     host: "127.0.0.1",
     port: 5173,
+    allowedHosts,
     proxy: {
       "/api": {
         target: proxyTarget,
         changeOrigin: false,
+        // Append X-Forwarded-For with the real client address. The backend's
+        // local-only settings guard reads the right-most hop, so it can tell a
+        // loopback caller (this dev server behind nginx/frp) from a public one.
+        xfwd: true,
       },
     },
   },

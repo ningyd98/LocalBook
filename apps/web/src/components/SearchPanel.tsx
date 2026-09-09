@@ -1,3 +1,4 @@
+import {useI18n} from "../i18n";
 import { useState } from "react";
 import { Button } from "@localnote/ui";
 import { useWorkspaceStore } from "@localnote/workspace";
@@ -30,6 +31,7 @@ function prettyPath(path: string) {
 
 /** M3 keyword-search entry + results panel (Ribbon "Search"). */
 export function SearchPanel({ onOpen, onClose }: { onOpen: (path: string) => void; onClose: () => void }) {
+  const {tr,errorText} = useI18n();
   const search = useWorkspaceStore((s) => s.search);
   const runSearch = useWorkspaceStore((s) => s.runSearch);
   const [query, setQuery] = useState(search.query);
@@ -40,39 +42,39 @@ export function SearchPanel({ onOpen, onClose }: { onOpen: (path: string) => voi
   };
 
   return (
-    <section className="search-panel" aria-label="Search notes">
+    <section className="search-panel" aria-label={tr("搜索笔记","Search notes")}>
       <header className="search-header">
-        <h2>Search</h2>
-        <Button onClick={onClose} aria-label="Close search">
+        <h2>{tr("搜索","Search")}</h2>
+        <Button onClick={onClose} aria-label={tr("关闭搜索","Close search")}>
           ×
         </Button>
       </header>
       <form className="search-form" onSubmit={submit} role="search">
         <input
-          aria-label="Search query"
+          aria-label={tr("搜索关键词","Search query")}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search note titles and contents…"
+          placeholder={tr("搜索笔记标题与正文…","Search note titles and contents\u2026")}
           autoFocus
         />
         <Button type="submit" disabled={search.status === "loading" || query.trim().length === 0}>
-          {search.status === "loading" ? "Searching…" : "Search"}
+          {search.status === "loading" ? tr("搜索中…","Searching…") : tr("搜索","Search")}
         </Button>
       </form>
       {search.status === "error" && (
         <p role="alert" className="search-error">
-          {search.error?.message ?? "Search failed."}
+          {errorText(search.error)}
         </p>
       )}
       {search.status === "ready" && search.response && (
         <>
           {search.response.degraded && (
-            <p className="search-degraded">Some notes were skipped ({search.response.skipped_notes} unreadable).</p>
+            <p className="search-degraded">{tr(`部分笔记无法读取，已跳过 ${search.response.skipped_notes} 篇。`, `Some notes were skipped (${search.response.skipped_notes} unreadable).`)}</p>
           )}
           {search.response.total === 0 ? (
-            <p className="search-empty">No results for “{search.response.query}”.</p>
+            <p className="search-empty">{tr(`没有找到“${search.response.query}”的结果。`, `No results for “${search.response.query}”.`)}</p>
           ) : (
-            <ul className="search-results" aria-label="Search results">
+            <ul className="search-results" aria-label={tr("搜索结果","Search results")}>
               {search.response.hits.map((hit) => (
                 <li key={hit.path} className="search-result">
                   <Button className="search-result-title" onClick={() => onOpen(hit.path)}>
@@ -90,7 +92,7 @@ export function SearchPanel({ onOpen, onClose }: { onOpen: (path: string) => voi
           )}
         </>
       )}
-      {search.status === "idle" && <p className="search-hint">Type keywords to search titles, tags and note text.</p>}
+      {search.status === "idle" && <p className="search-hint">{tr("输入关键词，搜索标题、标签和笔记正文。","Type keywords to search titles, tags and note text.")}</p>}
     </section>
   );
 }

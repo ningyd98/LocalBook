@@ -38,6 +38,8 @@ def test_create_modify_delete_keep_rows_and_fts_consistent(
     # create
     service.create_bytes("one.md", b"# One\nhello incremental-world\n")
     index.handle_event(VaultEvent.created("one.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
+    index.flush_events()  # P1-3: process buffered events immediately
     entry = index.entry("one.md")
     assert entry is not None and "hello incremental-world" in entry.text
     assert [h.path for h in search.search("incremental-world").hits] == ["one.md"]
@@ -46,6 +48,8 @@ def test_create_modify_delete_keep_rows_and_fts_consistent(
     _data, digest = service.read_bytes("one.md")
     service.write_bytes("one.md", b"# One\nbrand-new-body-q7\n", digest)
     index.handle_event(VaultEvent.modified("one.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
+    index.flush_events()  # P1-3: process buffered events immediately
     assert [h.path for h in search.search("incremental-world").hits] == []
     assert [h.path for h in search.search("brand-new-body-q7").hits] == ["one.md"]
 
@@ -53,6 +57,7 @@ def test_create_modify_delete_keep_rows_and_fts_consistent(
     _data2, digest2 = service.read_bytes("one.md")
     service.delete_file("one.md", digest2)
     index.handle_event(VaultEvent.deleted("one.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
     assert index.entry("one.md") is None
     assert search.search("brand-new-body-q7").total == 0
     assert index.note_count() == 0
@@ -70,6 +75,7 @@ def test_same_sha256_modify_is_skipped(
     before = index.entry("a.md").sha256
     # No real file change, but an event arrives (touch-like duplicate event).
     index.handle_event(VaultEvent.modified("a.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
     assert index.entry("a.md") is not None
     assert index.entry("a.md").sha256 == before
     assert index.note_count() == 1
@@ -87,6 +93,7 @@ def test_tags_and_backlinks_follow_modify(
 
     service.create_bytes("src.md", b"---\ntags: [one]\n---\n# Src\nsee [[Target]]\n")
     index.handle_event(VaultEvent.created("src.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
     assert "src.md" in index.tags_for("one")
     assert [s for s, _ in index.backlink_sources("target.md")] == ["src.md"]
 
@@ -95,6 +102,7 @@ def test_tags_and_backlinks_follow_modify(
         "src.md", b"---\ntags: [two]\n---\n# Src\nno links now\n", digest
     )
     index.handle_event(VaultEvent.modified("src.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
     assert index.tags_for("one") == []
     assert "src.md" in index.tags_for("two")
     assert index.backlink_sources("target.md") == []
@@ -115,6 +123,7 @@ def test_delete_removes_note_and_backlink_contributions(
     _data, digest = service.read_bytes("src.md")
     service.delete_file("src.md", digest)
     index.handle_event(VaultEvent.deleted("src.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
     assert index.entry("src.md") is None
     assert index.backlink_sources("target.md") == []
     assert index.basenames_noext("src") == []
@@ -135,6 +144,7 @@ def test_move_is_delete_plus_create(
     _data, digest = service.read_bytes("old.md")
     service.move_file("old.md", "sub/new.md", digest)
     index.handle_event(VaultEvent.moved("old.md", "sub/new.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
     assert index.entry("old.md") is None
     moved = index.entry("sub/new.md")
     assert moved is not None
@@ -155,10 +165,15 @@ def test_directory_and_non_markdown_events_ignored(
     index = _indexed(root, service)
     count = index.note_count()
     index.handle_event(VaultEvent.created("folder", is_directory=True))
+    index.flush_events()  # P1-3: process buffered events immediately
     index.handle_event(VaultEvent.deleted("folder", is_directory=True))
+    index.flush_events()  # P1-3: process buffered events immediately
     index.handle_event(VaultEvent.created("image.png"))
+    index.flush_events()  # P1-3: process buffered events immediately
     index.handle_event(VaultEvent.modified("image.png"))
+    index.flush_events()  # P1-3: process buffered events immediately
     index.handle_event(VaultEvent.deleted("image.png"))
+    index.flush_events()  # P1-3: process buffered events immediately
     assert index.note_count() == count
 
 
@@ -172,6 +187,7 @@ def test_unreadable_created_via_event_is_isolated(
     index = _indexed(root, service)
     service.create_bytes("bad.md", b"\xff\xfe not utf8\n")
     index.handle_event(VaultEvent.created("bad.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
     entry = index.entry("bad.md")
     assert entry is not None
     assert entry.frontmatter_status == "unreadable"

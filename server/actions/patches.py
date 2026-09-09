@@ -99,17 +99,23 @@ def has_tags_block(source: str) -> bool:
 def add_tags(source: str, tags: list[str]) -> str:
     """Add ``tags`` to an existing tags block, else insert a block."""
     text, bom = _strip_bom(source)
-    addition = "".join(f"  - {tag}\n" for tag in tags)
+    newline = "\r\n" if "\r\n" in text else "\n"
+    addition = "".join(f"  - {tag}{newline}" for tag in tags)
     span = _frontmatter_span(text)
     prefix = "\ufeff" if bom else ""
     if span is None:
-        return prefix + "---\ntags:\n" + addition + "---\n" + text
+        return prefix + f"---{newline}tags:{newline}" + addition + f"---{newline}" + text
     start, end = span
     block = _tag_block_abs(text[start:end], start)
     if block is not None:
         _block_start, block_end = block
         return prefix + text[:block_end] + addition + text[block_end:]
-    return prefix + text[:end] + "tags:\n" + addition + text[end:]
+    # An existing scalar/flow-style or quoted key is not an absent field.
+    # Refuse formats we cannot patch faithfully instead of creating a second
+    # key that would silently hide the original tags from YAML readers.
+    if re.search(r"(?m)^(?:tags|'tags'|\"tags\")[ \t]*:", text[start:end]):
+        raise UnsupportedPatch("existing tags format cannot be safely extended")
+    return prefix + text[:end] + f"tags:{newline}" + addition + text[end:]
 
 
 def remove_tags(source: str, tags: list[str]) -> str:

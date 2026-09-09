@@ -3,12 +3,206 @@ export type AIStatus = "not_configured" | "offline" | "connected";
 export interface AICapabilities { chat: boolean; embedding: boolean; rerank: boolean; }
 export interface DiscoveredModel { id: string; owned_by: string | null; capabilities: AICapabilities; }
 export type AIErrorCode = "not_configured" | "connection_refused" | "timeout" | "http_error" | "invalid_response" | "no_matching_model" | "unknown";
-export interface AIStatusResponse { status: AIStatus; provider: "omlx"; endpoint: string | null; qwen_model: string | null; models: DiscoveredModel[]; capabilities: AICapabilities; error_code: AIErrorCode | null; message: string | null; checked_at: string | null; }
+export interface AIStatusResponse { status: AIStatus; provider: "omlx"; endpoint: string | null; qwen_model: string | null; selected_model?: string | null; models: DiscoveredModel[]; capabilities: AICapabilities; error_code: AIErrorCode | null; message: string | null; checked_at: string | null; }
 export type VaultFileKind = "file" | "directory";
 export interface VaultFileEntry { path: string; kind: VaultFileKind; size: number | null; sha256: string | null; }
 export interface VaultFileTreeResponse { root: string; entries: VaultFileEntry[]; generated_at: string; }
 export interface FileReadResponse { path: string; content_base64: string; byte_length: number; sha256: string; content_type: string | null; }
 export interface FileMutationResponse { path: string; sha256: string | null; byte_length: number | null; operation: "created" | "updated" | "deleted" | "moved"; }
+// ---------------------------------------------------------------------------
+// Attachment uploads (server source of truth: server/vault/schemas.py)
+// ---------------------------------------------------------------------------
+/**
+ * Actual landing point and content metadata for one uploaded attachment.
+ * `path` is the Vault-root-relative landing path (`attachments/` is not a
+ * required prefix). `target_directory` is always decided by the front end.
+ */
+export interface AttachmentUploadResponse { path: string; sha256: string; byte_length: number; content_type: string; operation: "created"; original_name: string; }
+/** JSON/base64 request body for `POST /vault/attachments`. */
+export interface AttachmentUploadRequest { original_name: string; target_directory: string; content_base64: string; }
+/** Read-only metadata for the raw resource endpoint (preview/download). */
+export interface AttachmentResource { path: string; byte_length: number; content_type: string; }
+/** Which entry point produced an upload (used for target-directory rules). */
+export type AttachmentUploadSource = "toolbar" | "editor-drop" | "preview-drop" | "paste" | "tree-context";
+/** Stable attachment error codes surfaced by `errorText`. */
+export type AttachmentErrorCode = "invalid_request" | "invalid_attachment_name" | "not_found" | "already_exists" | "file_too_large" | "path_traversal" | "symlink_escape" | "vault_unavailable" | "vault_not_configured" | string;
+export interface AttachmentUploadError { error: { code: AttachmentErrorCode; message: string; path: string | null }; }
+
+/**
+ * Resolve a Markdown-relative link target against the directory of
+ * `notePath` and return a Vault-root-relative POSIX path.
+ *
+ * Returns `null` for anything that is not a safe Vault-relative reference:
+ * absolute URLs/protocols (`http:`, `data:`, `javascript:`…), absolute paths,
+ * NUL, backslashes and references that climb above the Vault root. `../`
+ * segments are normalised deterministically, so a reference written against
+ * the current note directory always maps to the same root-relative path.
+ */
+export function resolveVaultRelativePath(notePath: string | null | undefined, target: string): string | null {
+  if (typeof target !== "string" || !target) return null;
+  if (target.includes("\x00") || target.includes("\\")) return null;
+  // A URI scheme (http:, data:, blob:, javascript:, C:) is never a Vault path.
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) return null;
+  if (target.startsWith("//") || target.startsWith("?")) return null;
+  // A root-relative reference (``/notes/x.png``) is already Vault-root-relative.
+  const base = target.startsWith("/") || !notePath ? [] : notePath.split("/").slice(0, -1);
+  const parts: string[] = [];
+  // Authored references are percent-encoded; decode each segment once so the
+  // returned path is the canonical Vault path (encoding happens exactly once,
+  // later, when the resource URL is built).
+  for (const segment of [...base, ...target.split("/").map(decodeReferenceSegment)]) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") { if (!parts.length) return null; parts.pop(); continue; }
+    parts.push(segment);
+  }
+  if (!parts.length) return null;
+  return parts.join("/");
+}
+
+function decodeReferenceSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+/**
+ * Vault-root-relative directory of `notePath` (`""` for a root-level note).
+ * This is the value a toolbar/drop/paste upload must send as
+ * `target_directory`.
+ */
+export function noteDirectory(notePath: string | null | undefined): string {
+  if (!notePath) return "";
+  return notePath.split("/").slice(0, -1).join("/");
+}
+
+/**
+ * POSIX Markdown reference from the directory of `notePath` to the
+ * Vault-root-relative `targetPath` (deterministic `../` segments).
+ */
+export function relativeMarkdownReference(notePath: string | null | undefined, targetPath: string): string {
+  const from = notePath ? notePath.split("/").slice(0, -1) : [];
+  const to = targetPath.split("/");
+  let shared = 0;
+  while (shared < from.length && shared < to.length - 1 && from[shared] === to[shared]) shared += 1;
+  const up = from.length - shared;
+  return [...Array(up).fill(".."), ...to.slice(shared)].join("/");
+}
+
+/** Parsed parts of one `[[...]]` occurrence. */
+export interface WikilinkTarget {
+  /** Note/attachment name as authored, without section, block or alias. */
+  target: string;
+  /** Visible label (alias when present, otherwise the target). */
+  label: string;
+  /** `#Heading` part, without the `#`. */
+  section: string | null;
+  /** `^block` part, without the `^`. */
+  block: string | null;
+  /** `![[...]]` embed. */
+  embed: boolean;
+  /** `[[https://…]]` external link. */
+  web: boolean;
+}
+
+/** Split an authored `[[target|alias]]` body into its parts. */
+export function parseWikilink(body: string): WikilinkTarget {
+  const embed = body.startsWith("!");
+  let rest = embed ? body.slice(1) : body;
+  if (rest.startsWith("[[") && rest.endsWith("]]")) rest = rest.slice(2, -2);
+  let alias: string | null = null;
+  const pipe = rest.indexOf("|");
+  if (pipe >= 0) { alias = rest.slice(pipe + 1); rest = rest.slice(0, pipe); }
+  let section: string | null = null;
+  let block: string | null = null;
+  const hash = rest.indexOf("#");
+  if (hash >= 0) { section = rest.slice(hash + 1); rest = rest.slice(0, hash); }
+  const caret = rest.indexOf("^");
+  if (caret >= 0) { block = rest.slice(caret + 1); rest = rest.slice(0, caret); }
+  const target = rest.trim();
+  const web = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(target);
+  return { target, label: (alias ?? target).trim() || target, section, block, embed, web };
+}
+
+/**
+ * Vault-relative path a missing `[[target]]` note should be created at:
+ * the source note's own directory for a bare name, or the authored relative
+ * sub-path when the target contains `/`. Returns `null` when the target is not
+ * a safe single note reference (empty, web, attachment suffix, `..`, NUL…).
+ */
+export function wikilinkCreatePath(notePath: string | null | undefined, target: string): string | null {
+  const name = target.trim();
+  if (!name || name.includes("\x00") || name.includes("\\")) return null;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(name)) return null;
+  if (name.startsWith("/") || name.endsWith("/")) return null;
+  const segments = name.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return null;
+  // Keep the authored suffix when it is markdown; append `.md` otherwise.
+  const last = segments.at(-1)!;
+  const withExtension = /\.(md|markdown)$/i.test(last) ? name : `${name}.md`;
+  const base = noteDirectory(notePath);
+  return base ? `${base}/${withExtension}` : withExtension;
+}
+
+/**
+ * Replace `[[…]]` / `![[…]]` with links the preview can turn into clickable
+ * elements. Code spans and fenced blocks are left untouched, and the produced
+ * `href` carries an opaque `wikilink:` scheme that only the renderer's own
+ * resolver understands (the sanitizer only lets it through for this class).
+ */
+export function preprocessWikilinks(source: string): string {
+  const parts: string[] = [];
+  let index = 0;
+  let fence: string | null = null;
+  while (index < source.length) {
+    const lineEnd = source.indexOf("\n", index);
+    const end = lineEnd === -1 ? source.length : lineEnd;
+    const line = source.slice(index, end);
+    const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[1]![0]!;
+      fence = fence && fence === marker ? null : fence === null ? marker : fence;
+      parts.push(line);
+      index = end + 1;
+      continue;
+    }
+    parts.push(fence ? line : replaceInlineWikilinks(line));
+    index = end + 1;
+  }
+  return parts.join("\n");
+}
+
+function replaceInlineWikilinks(line: string): string {
+  const parts: string[] = [];
+  let cursor = 0;
+  while (cursor < line.length) {
+    const open = line.indexOf("[[", cursor);
+    if (open === -1) { parts.push(line.slice(cursor)); break; }
+    const close = line.indexOf("]]", open + 2);
+    if (close === -1) { parts.push(line.slice(cursor)); break; }
+    // Inline code: copy it verbatim so `[[x]]` inside backticks stays literal.
+    const before = line.slice(0, open);
+    const ticks = (before.match(/(?<!`)`(?!`)/g) ?? []).length;
+    parts.push(line.slice(cursor, open));
+    // ``![[embed]]``: keep the leading bang so the embed form is recognised.
+    const embedStart = open > 0 && line[open - 1] === "!";
+    const raw = line.slice(embedStart ? open - 1 : open, close + 2);
+    if (embedStart) parts[parts.length - 1] = parts[parts.length - 1]!.slice(0, -1);
+    parts.push(ticks % 2 === 0 ? wikilinkToMarkdown(raw) : raw);
+    cursor = close + 2;
+  }
+  return parts.join("");
+}
+
+function wikilinkToMarkdown(raw: string): string {
+  const parsed = parseWikilink(raw);
+  if (parsed.web || parsed.embed) return raw;
+  if (!parsed.target) return raw;
+  const label = parsed.label.replace(/([\\[\]])/g, "\\$1");
+  const suffix = parsed.section ? `#${parsed.section}` : parsed.block ? `^${parsed.block}` : "";
+  return `[${label}${suffix}](wikilink:${encodeURIComponent(parsed.target)})`;
+}
 export type VaultErrorCode = "vault_not_configured" | "vault_unavailable" | "path_traversal" | "symlink_escape" | "not_found" | "already_exists" | "file_conflict" | "expected_hash_required" | "invalid_request" | "file_too_large" | "not_a_file" | "not_a_directory" | "atomic_write_failed" | "watcher_unavailable" | "index_unavailable" | "internal_error" | string;
 export interface VaultErrorBody { error: { code: VaultErrorCode; message: string; path: string | null }; }
 export type FrontmatterStatus = "none" | "ok" | "parse_error" | "unreadable";

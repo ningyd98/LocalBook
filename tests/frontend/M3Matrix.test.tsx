@@ -3,7 +3,8 @@
  * workspace store relations/search actions. fetch and API doubles are fully
  * mocked — no backend/network/filesystem.
  */
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
+import { render } from "./render";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchBacklinks, fetchLinks, fetchMetadata, rebuildIndex, searchNotes } from "../../apps/web/src/api/client";

@@ -220,6 +220,13 @@ class VaultWatcher:
             display = self.safety.display_path(relative)
             if is_reserved_derived_path(display):
                 return None
+            # Attachment uploads stage bytes in ``.localnote-tmp-*`` files and
+            # rename them into place; those transient names (and any other
+            # hidden segment) must never reach index consumers as a note or
+            # resource path.  ``include_hidden`` is a listing option, not a
+            # write/watch authorization.
+            if any(part.startswith(".") for part in display.split("/")):
+                return None
             validate_relative_path(display)
             return display
         except (VaultError, ValueError, OSError):

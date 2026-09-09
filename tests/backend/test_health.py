@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+from tests.backend.client import TestClient
 
 
 def test_health_happy_path(client: TestClient) -> None:

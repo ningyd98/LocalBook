@@ -1,4 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import { render } from "./render";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SchedulerStatus } from "../../apps/web/src/components/SchedulerStatus";
@@ -84,7 +85,7 @@ describe("M8 isolation", () => {
     });
     vi.stubGlobal("fetch", mock);
     render(<SchedulerStatus onPreview={vi.fn()} />);
-    const button = await screen.findByRole("button", { name: "Run daily_organizer" });
+    const button = await screen.findByRole("button", { name: "Run Daily organizer" });
     await userEvent.click(button);
     await waitFor(() =>
       expect(fetchCalls.some((url) => url.includes("/scheduler/run/"))).toBe(true),
@@ -92,7 +93,7 @@ describe("M8 isolation", () => {
     // the component only ever talks to the scheduler endpoints
     expect(fetchCalls.every((url) => url.includes("/scheduler/"))).toBe(true);
     expect(fetchCalls.some((url) => url.includes("/jobs/"))).toBe(false);
-    expect(screen.queryByText(/committed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Applied/)).not.toBeInTheDocument();
   });
 
   it("does not read local storage for the scheduler strip", async () => {

@@ -1,8 +1,11 @@
-# server/ai/profiles — Phase 0 placeholder, no runtime behavior
+# server/ai/profiles — Reserved provider/model profile boundary
 
-Future provider/model profiles (capability hints, policy-relevant metadata).
+This directory remains an intentional placeholder. M6 discovery and workflow
+runtime are implemented in `server/ai/service.py`, `server/ai/schemas.py`,
+and `server/ai/adapters/` without profile plumbing.
 
-- Phase 0 ships **no** profiles or runtime behavior. Discovery is implemented
-  directly in server/ai (service + adapter) without profile plumbing.
-- Allowed dependencies (future): server.ai.schemas.
-- M1 entry: M6 when embedding/rerank profiles become real.
+- No profile registry or profile-specific runtime behavior is exposed.
+- Embedding and reranking endpoints remain unavailable and are reported as
+  `capability_unavailable`; this package is not required for that behavior.
+- A future profile layer must be introduced by an explicit milestone and must
+  not weaken the current allow-list, schema, or offline-safety boundaries.

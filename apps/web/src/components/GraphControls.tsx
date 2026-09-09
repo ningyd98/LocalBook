@@ -1,3 +1,4 @@
+import {useI18n} from "../i18n";
 import { useState } from "react";
 import { Button } from "@localnote/ui";
 import type { GraphScope } from "@localnote/protocol";
@@ -30,6 +31,7 @@ export function GraphControls({
   loading: boolean;
   onApply: (overrides: GraphControlsOverrides) => void;
 }) {
+  const {tr} = useI18n();
   const [scope, setScope] = useState<GraphScope>(initial.scope);
   const [note, setNote] = useState<string>(initial.note ?? activeNote ?? "");
   const [tag, setTag] = useState<string>(initial.tag ?? "");
@@ -53,24 +55,24 @@ export function GraphControls({
   };
 
   return (
-    <form className="graph-controls" onSubmit={submit} aria-label="Graph controls">
+    <form className="graph-controls" onSubmit={submit} aria-label={tr("图谱筛选","Graph controls")}>
       <label className="graph-control">
-        <span>Scope</span>
+        <span>{tr("范围","Scope")}</span>
         <select
-          aria-label="Graph scope"
+          aria-label={tr("图谱范围","Graph scope")}
           value={scope}
           onChange={(event) => setScope(event.target.value as GraphScope)}
         >
-          <option value="global">Global</option>
-          <option value="local">Local (around a note)</option>
-          <option value="tag">Tag</option>
+          <option value="global">{tr("全部笔记","Global")}</option>
+          <option value="local">{tr("当前笔记周边","Local (around a note)")}</option>
+          <option value="tag">{tr("标签","Tag")}</option>
         </select>
       </label>
       {scope === "local" && (
         <label className="graph-control graph-control-wide">
-          <span>Note path (defaults to the open note)</span>
+          <span>{tr("笔记路径（默认为当前笔记）","Note path (defaults to the open note)")}</span>
           <input
-            aria-label="Local graph root note"
+            aria-label={tr("局部图谱根笔记","Local graph root note")}
             value={note}
             placeholder={activeNote ?? "notes/example.md"}
             onChange={(event) => setNote(event.target.value)}
@@ -80,9 +82,9 @@ export function GraphControls({
       {scope === "local" && (
         <>
           <label className="graph-control">
-            <span>Depth</span>
+            <span>{tr("层级","Depth")}</span>
             <select
-              aria-label="Local graph depth"
+              aria-label={tr("局部图谱深度","Local graph depth")}
               value={depth}
               onChange={(event) => setDepth(Number(event.target.value))}
             >
@@ -92,24 +94,24 @@ export function GraphControls({
             </select>
           </label>
           <label className="graph-control">
-            <span>Direction</span>
+            <span>{tr("链接方向","Direction")}</span>
             <select
-              aria-label="Local graph direction"
+              aria-label={tr("局部图谱链接方向","Local graph direction")}
               value={direction}
               onChange={(event) => setDirection(event.target.value as "both" | "outgoing" | "incoming")}
             >
-              <option value="both">Both</option>
-              <option value="outgoing">Outgoing</option>
-              <option value="incoming">Incoming</option>
+              <option value="both">{tr("双向","Both")}</option>
+              <option value="outgoing">{tr("引用","Outgoing")}</option>
+              <option value="incoming">{tr("被引用","Incoming")}</option>
             </select>
           </label>
         </>
       )}
       {scope !== "tag" && (
         <label className="graph-control">
-          <span>Tag filter</span>
+          <span>{tr("标签筛选","Tag filter")}</span>
           <input
-            aria-label="Tag filter"
+            aria-label={tr("标签筛选","Tag filter")}
             value={tag}
             placeholder="工作"
             onChange={(event) => setTag(event.target.value)}
@@ -118,9 +120,9 @@ export function GraphControls({
       )}
       {scope === "tag" && (
         <label className="graph-control">
-          <span>Tag</span>
+          <span>{tr("标签","Tag")}</span>
           <input
-            aria-label="Tag graph tag"
+            aria-label={tr("图谱标签","Tag graph tag")}
             value={tag}
             placeholder="工作"
             onChange={(event) => setTag(event.target.value)}
@@ -128,9 +130,9 @@ export function GraphControls({
         </label>
       )}
       <label className="graph-control">
-        <span>Limit</span>
+        <span>{tr("节点上限","Limit")}</span>
         <select
-          aria-label="Graph node limit"
+          aria-label={tr("图谱节点上限","Graph node limit")}
           value={limit}
           onChange={(event) => setLimit(Number(event.target.value))}
         >
@@ -142,14 +144,14 @@ export function GraphControls({
       <label className="graph-control graph-control-check">
         <input
           type="checkbox"
-          aria-label="Include broken links"
+          aria-label={tr("包含失效链接","Include broken links")}
           checked={includeBroken}
           onChange={(event) => setIncludeBroken(event.target.checked)}
         />
-        <span>Include broken</span>
+        <span>{tr("包含失效链接","Include broken")}</span>
       </label>
       <Button type="submit" disabled={loading} className="graph-control-apply">
-        {loading ? "Loading…" : "Apply"}
+        {loading ? tr("加载中…","Loading…") : tr("应用筛选","Apply")}
       </Button>
     </form>
   );

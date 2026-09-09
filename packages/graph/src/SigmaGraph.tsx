@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { GraphNode, GraphResponse } from "@localnote/protocol";
 import { GraphFallback } from "./fallback";
 import { buildGraphologyGraph, protocolNodes } from "./model";
-import { edgeColor, nodeColor } from "./styles";
+import { edgeColor, nodeColor, THEMES } from "./styles";
 import type { GraphTheme } from "./styles";
 import type { GraphClickTarget, GraphEdgeAttrs, GraphNodeAttrs } from "./types";
 
@@ -39,11 +39,13 @@ const defaultLoader: RendererLoader = async () => import("sigma");
 export function SigmaGraph({
   response,
   theme,
+  locale = "en-US",
   onNodeClick,
   className,
   loadRenderer = defaultLoader,
 }: {
   response: GraphResponse;
+  locale?: "zh-CN" | "en-US";
   theme: GraphTheme;
   onNodeClick?: (target: GraphClickTarget) => void;
   className?: string;
@@ -123,13 +125,30 @@ export function SigmaGraph({
 
         if (disposed) return;
         const graph = buildGraphologyGraph(response);
-        if (graph.order > 1) {
+        
+        // P2-2: Handle single-node graphs explicitly (center at origin)
+        if (graph.order === 1) {
+          const nodeId = graph.nodes()[0];
+          if (nodeId) {
+            graph.setNodeAttribute(nodeId, 'x', 0);
+            graph.setNodeAttribute(nodeId, 'y', 0);
+          }
+        } else if (graph.order > 1) {
+          // Compact, deterministic seeds prevent disconnected notes from
+          // dominating the fitted viewport before the force layout settles.
+          const ordered = graph.nodes().sort();
+          ordered.forEach((id, index) => {
+            const angle = index / ordered.length * Math.PI * 2;
+            const radius = Math.sqrt(ordered.length);
+            graph.mergeNodeAttributes(id, {x: Math.cos(angle) * radius, y: Math.sin(angle) * radius});
+          });
+          // Multi-node graphs: run layout
           if (graph.order <= 1200) {
             const assign = forceAtlas2.assign;
             if (assign) {
               assign(graph, {
-                iterations: 60,
-                settings: { gravity: 0.6, scalingRatio: 2, slowDown: 4 },
+                iterations: 120,
+                settings: { strongGravityMode: true, gravity: 0.2, scalingRatio: 10, slowDown: 1 + Math.log(graph.order), barnesHutOptimize: graph.order > 500 },
               });
             }
           } else {
@@ -142,12 +161,19 @@ export function SigmaGraph({
             circular?.assign(graph);
           }
         }
+        // else: graph.order === 0, empty graph (shouldn't reach here due to early return)
         if (disposed) return;
         const nodesTotal = response.nodes.length;
         const palette = theme;
         renderer = new SigmaCtor(graph, container, {
-          backgroundColor: palette === "dark" ? "#111827" : "#f6f5f1",
-          labelRenderedSizeThreshold: nodesTotal > 800 ? 18 : 7,
+          backgroundColor: THEMES[palette].background,
+          labelColor: {color: THEMES[palette].label},
+          labelRenderedSizeThreshold: nodesTotal > 800 ? 18 : 0,
+          labelSize: 12,
+          labelFont: "system-ui, sans-serif",
+          labelDensity: 1,
+          labelGridCellSize: 90,
+          stagePadding: 55,
           labelsOnHover: nodesTotal <= 1000,
           hideEdgesOnMove: nodesTotal > 1000,
           nodeReducer: (_nodeId: string, data: Record<string, unknown>) => {
@@ -197,10 +223,10 @@ export function SigmaGraph({
       <div
         ref={containerRef}
         className="graph-canvas"
-        aria-label={`Graph view of ${response.nodes.length} nodes and ${response.edges.length} edges`}
+        aria-label={locale === "zh-CN" ? `知识图谱：${response.nodes.length} 个节点，${response.edges.length} 条连线` : `Graph view of ${response.nodes.length} nodes and ${response.edges.length} edges`}
       />
       {fallbackReason !== null && (
-        <GraphFallback
+        <GraphFallback locale={locale}
           response={response}
           reason={fallbackReason}
           onOpenNote={openNoteByPath}

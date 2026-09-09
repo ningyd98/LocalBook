@@ -29,6 +29,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ENV_PREFIX = "LOCALNOTE_"
 ENV_NESTED_DELIMITER = "__"
 
+# Attachment upload split point (PLAN-ATTACHMENTS v1.1 §5.1/§10.5): files at or
+# below this size use the JSON ``content_base64`` channel, larger files use the
+# streaming multipart endpoint.  This is a protocol constant, not a user
+# setting; ``vault.max_file_bytes`` remains the absolute hard limit.
+ATTACHMENT_JSON_MAX_BYTES = 10 * 1024 * 1024
+
 # Shell-friendly flat aliases for the most common knobs. Documented nested
 # variables always win when both are present.
 _FLAT_ALIASES: dict[str, tuple[str, str]] = {
@@ -49,6 +55,25 @@ class ServerSettings(BaseModel):
         "http://127.0.0.1:5173",
         "http://localhost:5173",
     ]
+    # Extra Host names the /api/v1/settings routes accept beyond the built-in
+    # loopback set (127.0.0.1 / localhost / ::1). Only needed when the app is
+    # reached through a reverse proxy that preserves the public Host header
+    # (e.g. nginx -> frp -> 127.0.0.1:5173); the loopback peer check still
+    # applies. Opt-in: the default keeps settings local-only.
+    settings_trusted_hosts: list[str] = []
+
+    @field_validator("settings_trusted_hosts", mode="before")
+    @classmethod
+    def _split_trusted_hosts(cls, value: object) -> object:
+        """Accept a JSON list or a comma-separated string (env-friendly)."""
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            if text.startswith("["):
+                return value
+            return [part.strip() for part in text.split(",") if part.strip()]
+        return value
 
 
 class VaultSettings(BaseModel):
@@ -64,7 +89,6 @@ class VaultSettings(BaseModel):
     watcher_enabled: bool = True
     watcher_debounce_ms: int = Field(default=200, ge=0)
     max_file_bytes: int = Field(default=50 * 1024 * 1024, gt=0)
-
     @field_validator("root", mode="before")
     @classmethod
     def _blank_root_is_none(cls, value: object) -> object:
@@ -80,6 +104,11 @@ class AISettings(BaseModel):
     # Only the local oMLX provider is wired (matches AIStatusResponse.provider).
     provider: Literal["omlx"] = "omlx"
     base_url: str | None = "http://127.0.0.1:8000/v1"
+    # Optional bearer token for OpenAI-compatible endpoints that require
+    # authentication. Empty/None means "send no Authorization header". The
+    # value is never returned by the API (settings snapshots expose only
+    # ``api_key_set``); it is stored in the instance settings file.
+    api_key: str | None = None
     chat_model: str = "auto"
     temperature: float = Field(default=0.1, ge=0, le=1)
     max_context_notes: int = Field(default=8, ge=1, le=50)
@@ -90,6 +119,17 @@ class AISettings(BaseModel):
     max_output_tokens: int = Field(default=1200, ge=64, le=8192)
     max_models_response_bytes: int = Field(default=1_000_000, gt=0)
     qwen_match_pattern: str = r"qwen3\.?5[-_ ]?4b"
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _blank_api_key_is_none(cls, value: object) -> object:
+        """Blank/whitespace keys mean "no authentication" (never "")."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            trimmed = value.strip()
+            return trimmed or None
+        return value
 
 
 _CRON_FIELD_BOUNDS: tuple[

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import os
 import secrets
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
-from .errors import AlreadyExists, AtomicWriteError
+from .errors import AlreadyExists, AtomicWriteError, FileTooLarge, VaultUnavailable
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -133,6 +134,126 @@ def atomic_create_bytes(target: Path, data: bytes, *, sync_parent: bool = True) 
     atomic_write_bytes(target, data, replace=False, sync_parent=sync_parent)
 
 
+def atomic_create_stream(
+    target: Path,
+    chunks: Iterable[bytes],
+    *,
+    max_bytes: int,
+    sync_parent: bool = True,
+    on_temp: Callable[[Path], None] | None = None,
+) -> tuple[str, int]:
+    """Stream ``chunks`` into a same-directory temporary file, then commit.
+
+    The service (never a route) owns ``target``; the caller has already
+    validated the target directory and re-checked it.  The temporary file is
+    created ``O_EXCL``/``O_NOFOLLOW`` with mode ``0600``, is fsynced, and is
+    committed with a no-overwrite hard link so a concurrent creator can never
+    be overwritten.
+
+    Incremental SHA-256 and byte counting happen while writing, so a payload
+    larger than ``max_bytes`` is aborted as soon as the limit is crossed: the
+    temporary file is removed and ``FileTooLarge`` is raised without ever
+    buffering the whole payload.
+
+    Returns ``(sha256_digest, byte_length)`` with the digest in the canonical
+    ``sha256:<lowercase hex>`` form.
+    """
+    parent = target.parent
+    temp = _new_temp_path(parent)
+    fd: int | None = None
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(temp, flags, 0o600)
+        if on_temp is not None:
+            on_temp(temp)
+        with os.fdopen(fd, "wb", closefd=True) as stream:
+            fd = None
+            for chunk in chunks:
+                if not chunk:
+                    continue
+                if isinstance(chunk, (bytearray, memoryview)):
+                    chunk = bytes(chunk)
+                if not isinstance(chunk, bytes):
+                    raise AtomicWriteError("Attachment stream must yield bytes")
+                total += len(chunk)
+                if total > max_bytes:
+                    raise FileTooLarge()
+                digest.update(chunk)
+                stream.write(chunk)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except FileTooLarge:
+        _discard_temp(temp)
+        raise
+    except AlreadyExists:
+        _discard_temp(temp)
+        raise
+    except AtomicWriteError:
+        _discard_temp(temp)
+        raise
+    except OSError as exc:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        _discard_temp(temp)
+        raise VaultUnavailable("Vault file could not be written") from exc
+    except BaseException:
+        # A failing caller stream (client disconnect, multipart error) must not
+        # leave a temporary file behind.
+        _discard_temp(temp)
+        raise
+
+    try:
+        try:
+            os.link(temp, target, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise AlreadyExists(path=None) from exc
+        except OSError as exc:
+            raise AtomicWriteError("Unable to create the Vault file atomically") from exc
+        if sync_parent:
+            _fsync_directory(parent)
+    finally:
+        _discard_temp(temp)
+    return f"sha256:{digest.hexdigest()}", total
+
+
+def _discard_temp(temp: Path) -> None:
+    try:
+        temp.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def iter_chunks(stream: object, *, chunk_size: int = 1024 * 1024) -> Iterator[bytes]:
+    """Yield bounded chunks from a file-like object or an iterable of chunks.
+
+    ``await file.read()`` without a size would aggregate the whole multipart
+    payload in memory; this helper always requests at most ``chunk_size`` bytes
+    so the service can enforce its own byte budget while writing.
+    """
+    if hasattr(stream, "read"):
+        while True:
+            chunk = stream.read(chunk_size)  # type: ignore[union-attr]
+            if not chunk:
+                return
+            yield chunk
+        return
+    if isinstance(stream, (bytes, bytearray, memoryview)):
+        data = bytes(stream)
+        for start in range(0, len(data), chunk_size):
+            yield data[start : start + chunk_size]
+        return
+    for chunk in stream:  # type: ignore[union-attr]
+        if chunk:
+            yield chunk
+
+
 def atomic_replace_bytes(
     target: Path,
     data: bytes,
@@ -150,4 +271,61 @@ def atomic_replace_bytes(
     )
 
 
-__all__ = ["atomic_create_bytes", "atomic_replace_bytes", "atomic_write_bytes"]
+class ReplayableStream:
+    """Re-iterable, bounded-chunk view over a one-shot upload stream.
+
+    A name collision is only discovered at the no-overwrite commit, after the
+    payload has already been streamed once, so the next candidate name needs
+    the same bytes again.  Chunks are cached as they are first read and replayed
+    on a later iteration; the reader itself is never asked to ``read()``
+    unboundedly.
+    """
+
+    def __init__(self, stream: object, *, max_bytes: int, chunk_size: int = 1024 * 1024) -> None:
+        self._stream = stream
+        self._chunk_size = chunk_size
+        self._max_bytes = max_bytes
+        self._cache: list[bytes] = []
+        self._total = 0
+        self._exhausted = False
+
+    @property
+    def total_bytes(self) -> int:
+        return self._total
+
+    def __iter__(self) -> Iterator[bytes]:
+        for chunk in self._cache:
+            yield chunk
+        if self._exhausted:
+            return
+        if isinstance(self._stream, (bytes, bytearray, memoryview)):
+            data = bytes(self._stream)
+            self._total += len(data)
+            if self._total > self._max_bytes:
+                raise FileTooLarge()
+            self._cache.append(data)
+            self._exhausted = True
+            yield data
+            return
+        while True:
+            chunk = self._stream.read(self._chunk_size)  # type: ignore[union-attr]
+            if not chunk:
+                self._exhausted = True
+                return
+            if not isinstance(chunk, bytes):
+                raise AtomicWriteError("Attachment stream must yield bytes")
+            self._total += len(chunk)
+            if self._total > self._max_bytes:
+                raise FileTooLarge()
+            self._cache.append(chunk)
+            yield chunk
+
+
+__all__ = [
+    "ReplayableStream",
+    "atomic_create_bytes",
+    "atomic_create_stream",
+    "atomic_replace_bytes",
+    "atomic_write_bytes",
+    "iter_chunks",
+]

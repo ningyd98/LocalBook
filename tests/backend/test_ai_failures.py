@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import httpx
-from fastapi.testclient import TestClient
+from tests.backend.client import TestClient
 
 from server.ai.service import AIStatusService
 from server.api import dependencies

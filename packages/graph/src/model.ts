@@ -15,6 +15,9 @@ import type { GraphEdgeAttrs, GraphNodeAttrs } from "./types";
  *   graph; they are skipped here and surfaced through
  *   :func:`graphStats`/the fallback list instead.  No virtual node is ever
  *   fabricated.
+ * - P2-2 fix: Every node receives deterministic initial x/y coordinates
+ *   (hash-based) so Sigma can render even when layout libraries fail or are
+ *   skipped (single-node graphs).
  */
 export function buildGraphologyGraph(response: GraphResponse): Graph<GraphNodeAttrs, GraphEdgeAttrs> {
   const graph = new Graph<GraphNodeAttrs, GraphEdgeAttrs>({ multi: true });
@@ -23,8 +26,24 @@ export function buildGraphologyGraph(response: GraphResponse): Graph<GraphNodeAt
   return graph;
 }
 
+/** Simple string hash for deterministic coordinate generation. */
+function simpleHash(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return Math.abs(hash);
+}
+
 function addNode(graph: Graph<GraphNodeAttrs, GraphEdgeAttrs>, node: GraphNode): void {
   if (graph.hasNode(node.id)) return; // a repeated id is a server bug; never crash
+  
+  // P2-2: Generate deterministic initial coordinates based on node ID
+  const hash = simpleHash(node.id);
+  const x = (hash % 1000) - 500;  // Range: [-500, 500]
+  const y = ((hash >> 10) % 1000) - 500;
+  
   graph.addNode(node.id, {
     kind: node.type,
     label: node.label,
@@ -32,6 +51,8 @@ function addNode(graph: Graph<GraphNodeAttrs, GraphEdgeAttrs>, node: GraphNode):
     title: node.title,
     tag: node.tag,
     tagFolded: node.tag_folded,
+    x,
+    y,
   });
 }
 

@@ -108,6 +108,14 @@ class FileCreateRequest(BaseModel):
     content_base64: Base64Bytes = b""
 
 
+class DirectoryCreateRequest(BaseModel):
+    """Create a directory (parents must already exist, like file creation)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: RelativePath
+
+
 class FileWriteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -150,7 +158,67 @@ class FileListQuery(BaseModel):
     include_hidden: bool = False
 
 
+# ---------------------------------------------------------------------------
+# Attachment uploads (PLAN-ATTACHMENTS v1.1)
+# ---------------------------------------------------------------------------
+
+_MAX_ORIGINAL_NAME_LENGTH = 1024
+
+
+def normalize_target_directory_field(value: object) -> str:
+    """Validate the ``target_directory`` wire field.
+
+    ``""`` (or ``"."``) means the Vault root.  Anything else must be a
+    root-relative POSIX directory path with no hidden segment and no
+    ``.localnote`` segment; the service still checks that it exists and is a
+    real (non-symlink) directory.
+    """
+    from .attachments import normalize_target_directory
+
+    return normalize_target_directory(value)
+
+
+def _validate_original_name(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("original_name must be a string")
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("original_name must not be empty")
+    if len(stripped) > _MAX_ORIGINAL_NAME_LENGTH:
+        raise ValueError("original_name is too long")
+    return stripped
+
+
+TargetDirectory = Annotated[str, BeforeValidator(normalize_target_directory_field)]
+OriginalName = Annotated[str, BeforeValidator(_validate_original_name)]
+
+
+class AttachmentUploadRequest(BaseModel):
+    """JSON-channel attachment upload (≤ the configured JSON threshold)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    original_name: OriginalName
+    target_directory: TargetDirectory
+    content_base64: Base64Bytes
+
+
+class AttachmentUploadResponse(BaseModel):
+    """Actual landing point and content metadata for one uploaded attachment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    sha256: str
+    byte_length: int
+    content_type: str
+    operation: Literal["created"]
+    original_name: str
+
+
 __all__ = [
+    "AttachmentUploadRequest",
+    "AttachmentUploadResponse",
     "Base64Bytes",
     "FileCreateRequest",
     "FileDeleteRequest",
@@ -159,11 +227,14 @@ __all__ = [
     "FileMutationResponse",
     "FileReadResponse",
     "FileWriteRequest",
+    "OriginalName",
     "RelativePath",
     "Sha256",
+    "TargetDirectory",
     "VaultFileEntry",
     "VaultFileTreeResponse",
     "decode_base64",
     "normalize_relative_path",
     "normalize_sha256",
+    "normalize_target_directory_field",
 ]

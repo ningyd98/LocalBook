@@ -7,12 +7,19 @@ import mimetypes
 import os
 import stat
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
 from ..config import VaultSettings
-from .atomic_write import atomic_create_bytes, atomic_replace_bytes
+from .atomic_write import (
+    ReplayableStream,
+    atomic_create_bytes,
+    atomic_create_stream,
+    atomic_replace_bytes,
+    iter_chunks,
+)
+from .attachments import normalize_target_directory, safe_attachment_name
 from .derived import initialize_derived
 from .errors import (
     AlreadyExists,
@@ -21,6 +28,8 @@ from .errors import (
     FileConflict,
     FileTooLarge,
     InvalidOperation,
+    InvalidRequest,
+    NotAFile,
     PathNotFound,
     SymlinkEscapeError,
     VaultNotConfigured,
@@ -40,6 +49,10 @@ _CHUNK_SIZE = 1024 * 1024
 
 _MARKDOWN_SUFFIXES = (".md", ".markdown")
 
+# Number of collision retries before the atomic commit's ``AlreadyExists`` is
+# surfaced as a 409.  Bounded so a hostile concurrent writer cannot spin.
+_ATTACHMENT_NAME_RETRIES = 5
+
 
 def sha256_bytes(data: bytes) -> str:
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
@@ -50,6 +63,47 @@ def _content_type_for(relative_path: str) -> str:
     if relative_path.casefold().endswith(_MARKDOWN_SUFFIXES):
         return "text/markdown"
     return mimetypes.guess_type(relative_path)[0] or "application/octet-stream"
+
+
+def _resource_content_type(relative_path: str) -> str:
+    """Media type for the read-only raw resource endpoint.
+
+    Unknown types fall back to ``application/octet-stream`` so a browser never
+    executes an uploaded file as HTML.
+    """
+    guessed = mimetypes.guess_type(relative_path)[0]
+    if guessed is None:
+        return "application/octet-stream"
+    if guessed in {"text/html", "application/xhtml+xml", "image/svg+xml"}:
+        # Never let a raw Vault file be interpreted as active content.
+        return "application/octet-stream"
+    return guessed
+
+
+def _content_disposition(relative_path: str) -> str:
+    """Safe ``inline`` disposition with a sanitised display filename.
+
+    HTTP header values are latin-1 on the wire, so the UTF-8 display name is
+    only ever emitted through the RFC 5987 ``filename*`` parameter, fully
+    percent-encoded; the bare ``filename`` fallback stays ASCII-only.
+    """
+    name = relative_path.split("/")[-1]
+    # ASCII-only fallback: ``str.isalnum`` accepts CJK/emoji, which latin-1
+    # header encoding would reject.
+    ascii_name = "".join(
+        char if (char.isascii() and (char.isalnum() or char in "._-")) else "_"
+        for char in name
+    ).strip("_") or "attachment"
+    return (
+        f'inline; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{_percent_encode(name)}"
+    )
+
+
+def _percent_encode(value: str) -> str:
+    from urllib.parse import quote
+
+    return quote(value, safe="")
 
 
 def _digest_file(path: Path, *, max_bytes: int | None = None) -> tuple[str, int]:
@@ -364,6 +418,247 @@ class VaultService:
         expected_sha256: str | None,
     ) -> dict[str, Any]:
         return self.write_bytes(relative_path, data, expected_sha256)
+
+    def create_directory(self, relative_path: str) -> dict[str, Any]:
+        """Create a directory. Parents must exist; never overwrites a file."""
+        relative, parent, target = self._resolve_parent_and_target(relative_path)
+        with self._mutation_lock:
+            self.safety.assert_safe_existing(parent, relative_path=self.safety.display_path(parent))
+            try:
+                info = target.lstat()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise VaultUnavailable(
+                    "Vault target cannot be inspected", path=relative
+                ) from exc
+            else:
+                if stat.S_ISLNK(info.st_mode):
+                    raise SymlinkEscapeError(path=relative)
+                # A directory that already exists is a conflict, exactly like a file.
+                raise AlreadyExists(path=relative)
+            # Revalidate immediately before the syscall.
+            self.safety.assert_safe_existing(parent, relative_path=self.safety.display_path(parent))
+            try:
+                target.mkdir(mode=0o755)
+            except FileExistsError as exc:
+                raise AlreadyExists(path=relative) from exc
+            except OSError as exc:
+                raise AtomicWriteError("Vault directory could not be created") from exc
+            self.safety.assert_safe_existing(target, relative_path=relative)
+        return {"path": relative, "sha256": None, "byte_length": None, "operation": "created"}
+
+    # ------------------------------------------------------------------
+    # Attachment uploads and raw resource reads (PLAN-ATTACHMENTS v1.1).
+    #
+    # The front end decides ``target_directory`` per entry point; the service
+    # only validates and executes it.  An empty string means the Vault root.
+    # No intermediate directory is ever created: the target directory must
+    # already exist and must not be a symlink.
+    # ------------------------------------------------------------------
+
+    def _resolve_upload_directory(self, target_directory: object) -> tuple[str, Path]:
+        directory = normalize_target_directory(target_directory)
+        path = self.safety.resolve_existing_directory(
+            directory or ".", allow_root=True
+        )
+        self.safety.assert_safe_existing(
+            path, relative_path=directory or self.safety.display_path(path)
+        )
+        return directory, path
+
+    def _existing_child_names(self, directory: Path) -> set[str]:
+        try:
+            return {entry.name for entry in os.scandir(directory)}
+        except FileNotFoundError as exc:
+            raise PathNotFound() from exc
+        except OSError as exc:
+            raise VaultUnavailable("Vault directory cannot be listed") from exc
+
+    def _attachment_response(
+        self,
+        relative: str,
+        digest: str,
+        byte_length: int,
+        original_name: str,
+    ) -> dict[str, Any]:
+        return {
+            "path": relative,
+            "sha256": digest,
+            "byte_length": byte_length,
+            "content_type": _content_type_for(relative),
+            "operation": "created",
+            "original_name": original_name,
+        }
+
+    def _upload_attachment(
+        self,
+        original_name: object,
+        target_directory: object,
+        *,
+        content: bytes | None = None,
+        stream: Iterable[bytes] | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(original_name, str) or not original_name.strip():
+            raise InvalidRequest("original_name must be a non-empty string")
+        display_name = original_name.strip()
+        if content is not None and len(content) > self.max_file_bytes:
+            raise FileTooLarge()
+        directory, directory_path = self._resolve_upload_directory(target_directory)
+
+        with self._mutation_lock:
+            self.safety.assert_safe_existing(
+                directory_path, relative_path=directory or "."
+            )
+            existing = self._existing_child_names(directory_path)
+            # A symlink anywhere in the chosen name's path is a security error
+            # and must be rejected before it is treated as a name collision:
+            # inspecting every candidate (not only the free ones) keeps an
+            # exposed symlink from being silently skipped as "already taken".
+            for name in sorted(existing):
+                candidate = self.safety.root_real.joinpath(
+                    *(([directory] if directory else []) + [name])
+                )
+                try:
+                    if stat.S_ISLNK(candidate.lstat().st_mode):
+                        raise SymlinkEscapeError(
+                            path=f"{directory}/{name}" if directory else name
+                        )
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    raise VaultUnavailable(
+                        "Vault entry cannot be inspected"
+                    ) from exc
+            taken = set(existing)
+            last_error: AlreadyExists | None = None
+            for _attempt in range(_ATTACHMENT_NAME_RETRIES):
+                relative = safe_attachment_name(
+                    display_name,
+                    directory,
+                    taken,
+                    None,
+                )
+                target = self.safety.root_real.joinpath(*relative.split("/"))
+                # Re-check the directory immediately before the syscall; the
+                # target itself is inspected again for a late symlink swap.
+                self.safety.assert_safe_existing(
+                    directory_path, relative_path=directory or "."
+                )
+                try:
+                    info = target.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    if stat.S_ISLNK(info.st_mode):
+                        raise SymlinkEscapeError(path=relative)
+                    taken.add(target.name)
+                    last_error = AlreadyExists(path=relative)
+                    continue
+                try:
+                    if stream is None:
+                        atomic_create_bytes(target, content or b"")
+                        digest = sha256_bytes(content or b"")
+                        byte_length = len(content or b"")
+                    else:
+                        digest, byte_length = atomic_create_stream(
+                            target,
+                            stream,
+                            max_bytes=self.max_file_bytes,
+                        )
+                    self.safety.assert_safe_existing(
+                        directory_path, relative_path=directory or "."
+                    )
+                    self.safety.assert_safe_existing(target, relative_path=relative)
+                except AlreadyExists as exc:
+                    exc.path = relative
+                    taken.add(target.name)
+                    last_error = exc
+                    continue
+                return self._attachment_response(
+                    relative, digest, byte_length, display_name
+                )
+        raise last_error or AlreadyExists(
+            path=safe_attachment_name(display_name, directory, taken)
+        )
+
+    def upload_attachment_bytes(
+        self,
+        original_name: str,
+        target_directory: str,
+        data: bytes,
+    ) -> dict[str, Any]:
+        """JSON-channel upload of a small attachment (≤ the caller's threshold)."""
+        return self._upload_attachment(
+            original_name,
+            target_directory,
+            content=data,
+        )
+
+    def upload_attachment_stream(
+        self,
+        original_name: str,
+        target_directory: str,
+        stream: object,
+        *,
+        chunk_size: int = _CHUNK_SIZE,
+    ) -> dict[str, Any]:
+        """Multipart-channel upload; the payload is never aggregated in memory.
+
+        The bounded reader is wrapped so a name-collision retry can replay the
+        already-read chunks instead of losing them.
+        """
+        if hasattr(stream, "read") or isinstance(stream, (bytes, bytearray, memoryview)):
+            replayable: Iterable[bytes] = ReplayableStream(
+                stream,
+                max_bytes=self.max_file_bytes,
+                chunk_size=chunk_size,
+            )
+        else:
+            replayable = iter_chunks(stream, chunk_size=chunk_size)
+        return self._upload_attachment(
+            original_name,
+            target_directory,
+            stream=replayable,
+        )
+
+    def open_resource(self, relative_path: str) -> dict[str, Any]:
+        """Resolve a read-only raw resource for the preview/download endpoint.
+
+        Returns a bounded reader; the caller streams it and closes it.  The
+        path uses the same public validation as every other Vault read, so
+        symlinks, hidden segments and ``.localnote`` are rejected.
+        """
+        relative, path = self._resolve_existing_file(relative_path)
+        with self._mutation_lock:
+            info = self.safety.assert_safe_existing(path, relative_path=relative)
+            if not stat.S_ISREG(info.st_mode):
+                raise NotAFile(path=relative)
+            if info.st_size > self.max_file_bytes:
+                raise FileTooLarge(path=relative)
+            try:
+                handle = path.open("rb")
+            except FileNotFoundError as exc:
+                raise PathNotFound(path=relative) from exc
+            except OSError as exc:
+                raise VaultUnavailable("Vault file cannot be read", path=relative) from exc
+        return {
+            "path": relative,
+            "byte_length": info.st_size,
+            "content_type": _resource_content_type(relative),
+            "content_disposition": _content_disposition(relative),
+            "reader": handle,
+            "max_bytes": self.max_file_bytes,
+            "owner": self,
+        }
+
+    def close_resource(self, resource: dict[str, Any]) -> None:
+        reader = resource.get("reader")
+        if reader is not None:
+            try:
+                reader.close()
+            except OSError:
+                pass
 
     def delete_file(self, relative_path: str, expected_sha256: str | None) -> dict[str, Any]:
         relative, path = self._resolve_existing_file(relative_path)

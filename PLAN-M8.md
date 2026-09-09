@@ -1,6 +1,7 @@
 # LocalNote Server M8 详细实施计划：Scheduler、可靠性强化与部署选项
 
-> 阶段：M8；路由：`mf/gpt-5.6-sol`（已确定并生效）。本文件是 M8 开发 Agent 的唯一实施依据。
+> 阶段：M8。本文件是 M8 开发 Agent 的历史实施依据；当前实现状态以
+> README、`docs/` 与代码/测试为准。
 > 本规划阶段只创建本文件；不得创建实现代码，不得修改 `PLAN.md`、`PLAN-M1.md`、`PLAN-M2.md`、`PLAN-M3.md`、`PLAN-M4.md`、`PLAN-M5.md`、`PLAN-M6.md` 或 `PLAN-M7.md`。
 > M8 建立在已实现的 M1–M7 之上，目标是完成 LocalNote 的本地 MVP 闭环：定时任务只负责何时触发，业务仍由 M7 受控 Job、Policy、Diff、确认/白名单、Transaction、History、Undo 边界负责。
 
@@ -22,16 +23,18 @@
 8. History retention 清理按配置执行、只删除派生 History/journal，不删除 Vault 文件、不影响 health/Vault/editor；删除后明确不可 Undo。陈旧 scheduler run/job 有有界清理策略。
 9. Scheduler 停止、关闭、依赖不可用、任务失败均不阻塞 health、Vault、editor、search、graph、AI status、History 查询和手动 Job；shutdown 有界等待并取消/标记运行中任务。
 10. 局域网监听默认仍为 `127.0.0.1`；仅当显式 `LOCALNOTE_HOST=0.0.0.0`（或嵌套 server host）且设置明确 CORS 白名单时允许启动/运行，并在日志、README、状态 API/UI 显示暴露告警。不得添加认证、账号、HTTPS。
-11. 提供至少 `GET /api/v1/scheduler/status` 和 `POST /api/v1/scheduler/run/{task}`；手动触发与定时触发完全共用 handler 和 M7 Policy/History 流程。
+11. 提供 `GET /api/v1/scheduler/status`、`POST /api/v1/scheduler/run/{task}`、
+`GET /api/v1/scheduler/runs` 与 `POST /api/v1/scheduler/recovery/{run_id}`；
+手动触发与定时触发完全共用 handler 和 M7 Policy/History 流程。
 12. 前端（可选但建议）显示 Scheduler enabled/running/stopped/degraded、next run、last result/告警，并复用 `OrganizerActions` 触发 Daily/Weekly；不在前端实现定时器或自动写逻辑。
-13. 新增测试只使用 fixtures、`tmp_path`、fake adapter/fake clock/fake scheduler/fake Vault，绝不触碰真实用户 Vault、真实 oMLX、云/NAS。M1–M7 既有门禁不回退（当前约后端 606、前端 114，实际以验收时命令为准）。
+13. 新增测试只使用 fixtures、`tmp_path`、fake adapter/fake clock/fake scheduler/fake Vault，绝不触碰真实用户 Vault、真实 oMLX、云/NAS。M1–M7 既有门禁不回退（历史基线约后端 606、前端 114；当前测试数量以实际命令为准）。
 14. `pytest`、Vitest、protocol/workspace/web typecheck、web build、`compileall`、`scripts/check.sh` 全通过；文档与配置示例可按命令复现。
 
 ## 2. 现状基线与实施前检查
 
 ### 2.1 已实现边界（M8 必须复用）
 
-- `server/config.py` 已有 pydantic-settings、`LOCALNOTE_` 前缀、`__` 嵌套分隔；已有 inert `SchedulerSettings(enabled=False)`，M8 需 additive 扩展并把默认改为 true。
+- `server/config.py` 已有 pydantic-settings、`LOCALNOTE_` 前缀、`__` 嵌套分隔；当前 `SchedulerSettings(enabled=True)` 已提供 M8 配置，默认任务仍以 preview 为安全行为。
 - `server/api/main.py` lifespan 顺序为 Vault lifecycle → SQLite `.localnote/index.db` → rebuild → watcher；已注册 jobs/history 路由、M7Error handler、CORS middleware。Scheduler 应在 index/Vault/Agent DI 就绪后启动，在 shutdown 前停止。
 - `server/api/dependencies.py` 已构造 `AgentJobService`、`HistoryRepository/Service`、Policy、adapter、ToolContext；应增加 scheduler/status/runner 的 app-state 单例依赖，禁止每个请求新建后台 scheduler。
 - `server/agents/service.py` 的 `plan()` 已包含 ActionSet、scope、preflight、Policy、Diff、History，并在 `request.execute` 且 Policy `allow` 时执行；M8 应调用其公共受控入口或添加明确的 `trigger_scheduled()` 薄包装，不复制执行代码。
@@ -135,7 +138,7 @@ class SchedulerBackend(Protocol):
 - `weekly_review`：默认 `0 20 * * 0`（周日），timezone 同上。
 - `index_consistency`：默认关闭或 interval 24h；只读校验，若 `index.auto_rebuild=false` 不自动 rebuild。
 
-所有 cron 字段先做严格范围校验，拒绝任意 Python 表达式；`zoneinfo.ZoneInfo` 无法加载时配置错误或回退 UTC（建议启动失败为配置错误，不猜时区）。记录 `scheduled_for`、`started_at`、`finished_at` 均使用 UTC ISO 时间，同时返回配置时区下的 next run。系统休眠/电脑关机期间任务可能错过：`coalesce=true` 最多补一次；错过超过 `misfire_grace_seconds` 则记录 `missed`，绝不补发大量历史任务。
+所有 cron 字段先做严格范围校验，拒绝任意 Python 表达式；`zoneinfo.ZoneInfo` 无法加载时配置错误或回退 UTC（建议启动失败为配置错误，不猜时区）。记录 `scheduled_for`、`started_at`、`finished_at` 均使用 UTC ISO 时间，同时返回配置时区下的 next run。系统休眠/电脑关机期间任务可能错过：`coalesce=true` 最多补一次；错过超过 `misfire_grace_seconds` 则跳过该槽位，不创建 `missed` run 行，绝不补发大量历史任务。
 
 ### 5.3 定时任务接入 M7 Job
 
@@ -170,7 +173,6 @@ class SchedulerRunStatus(StrEnum):
     RUNNING = "running"
     PREVIEWED = "previewed"
     COMMITTED = "committed"
-    MISSED = "missed"
     SKIPPED_DUPLICATE = "skipped_duplicate"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
@@ -198,7 +200,7 @@ class SchedulerRun(BaseModel):
     message: str | None = None
 ```
 
-进程内使用每 task 一把 `threading.Lock`/asyncio lock；数据库记录 `task + scheduled_for` unique idempotency key。重复触发在锁外先查运行/终态，返回已存在 run 或 `skipped_duplicate`。超时用 `scheduler.job_timeout_seconds`，标记 timed_out/recovery_required；不能强杀正在写的线程，shutdown 等待 bounded timeout 后只做诊断。任务执行中的 M7 transaction 仍由 Vault/History hash guard 保护。
+进程内使用每 task 一把 `threading.Lock`/asyncio lock；数据库记录 `task + scheduled_for` 作为审计字段；它不是唯一约束。重复触发在锁外先查 active run，按实现返回已有 run 或追加 `skipped_duplicate`，不宣称跨进程幂等。超时用 `scheduler.job_timeout_seconds`，标记 timed_out/recovery_required；不能强杀正在写的线程，shutdown 等待 bounded timeout 后只做诊断。任务执行中的 M7 transaction 仍由 Vault/History hash guard 保护。
 
 ### 5.5 崩溃恢复与显式诊断
 
@@ -419,7 +421,7 @@ python -m compileall server
 ### 9.1 风险与应对
 
 - **APScheduler 依赖/锁文件**：优先锁定兼容 Python 3.12 的版本；不可安装则单一 asyncio fallback，显示 degraded，不静默安装。
-- **定时精度/系统休眠/电池**：本地进程无法保证关机期间执行；记录 missed，coalesce 一次，文档说明不提供唤醒保证。
+- **定时精度/系统休眠/电池**：本地进程无法保证关机期间执行；coalesce 最多补跑一次，超出 grace 的槽位直接跳过，文档说明不提供唤醒保证。
 - **并发/线程与 SQLite 单连接**：每 task max one、Runner lock、复用 M7/Index RLock；跨进程不保证，M8 不做分布式锁。
 - **崩溃窗口**：写前 journal 已有基础；启动只诊断，外部 hash 冲突时不覆盖；显式恢复失败必须可审计。
 - **时区/DST**：使用 `zoneinfo`、存 UTC、返回本地 offset；非法时区配置在 Settings 阶段报错。

@@ -136,6 +136,7 @@ class SchedulerService:
         self._backend: Any = None
         self._backend_factory = backend_factory
         self._started = False
+        self._reconfiguring = False
         self._worker_loop: asyncio.AbstractEventLoop | None = None
         self._worker_thread: threading.Thread | None = None
         self._worker_stop = threading.Event()
@@ -444,7 +445,27 @@ class SchedulerService:
     # Run pipeline
     # ------------------------------------------------------------------
 
-    def _begin_run(
+    def pause_for_reconfigure(self) -> bool:
+        """Atomically block triggers only when no pipeline still owns this runtime."""
+        with self._lock:
+            if self._active_runs or self._locks.snapshot():
+                return False
+            self._reconfiguring = True
+            return True
+
+    def resume_after_reconfigure(self) -> None:
+        with self._lock:
+            self._reconfiguring = False
+
+    def _begin_run(self, **kwargs: Any) -> str | None:
+        with self._lock:
+            if self._reconfiguring:
+                if kwargs.get("trigger") == "scheduled":
+                    return None
+                raise SchedulerUnavailable("Workspace configuration is changing")
+            return self._begin_run_unlocked(**kwargs)
+
+    def _begin_run_unlocked(
         self,
         *,
         task: str,

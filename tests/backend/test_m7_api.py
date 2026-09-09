@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+from tests.backend.client import TestClient
 
 from server.actions.schemas import ActionType
 from server.agents.schemas import JobRequest

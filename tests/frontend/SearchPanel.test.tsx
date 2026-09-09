@@ -3,7 +3,8 @@
  * Results are rendered as text (never as HTML) and keyword highlights use
  * <mark>, so a malicious snippet cannot inject markup.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import { render } from "./render";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SearchPanel } from "../../apps/web/src/components/SearchPanel";

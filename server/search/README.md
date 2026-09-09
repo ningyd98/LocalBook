@@ -1,12 +1,16 @@
-# server/search — M3 已实现：关键词子串搜索（非 FTS）
+# server/search — M4 SQLite FTS search with safe substring fallback
 
-PLAN-M3 §5.5。`SearchService` 在内存派生索引上做大小写不敏感**子串**匹配：
+`SearchService` exposes read-only `GET /api/v1/search?q=`. The primary path
+uses the derived SQLite FTS5 index (MATCH/bm25); Chinese, Emoji, unsupported
+queries, FTS misses, or an unavailable FTS index use the M3 keyword-substring
+fallback. The response DTO remains stable and reports degraded/skipped counts.
 
-- 多词 AND（拆空白）、文件名>标题>tags 加权、固定 score→path 排序；
-- snippet 为命中词附近窗口的**纯文本**（React 以文本渲染并高亮，禁止当作
-  HTML 注入）；单篇读取失败跳过并计入 `skipped_notes`（降级）；
-- 空白/超长/含控制字符查询 → 400 `invalid_request`；索引不可用 → 503
-  `index_unavailable`；搜索只读、无副作用、不产生 query 正文日志。
+- Multi-token queries use AND semantics; snippets are plain text and safe for
+  React rendering.
+- Results are deterministic and never write Vault, SQLite, or query text to
+  logs.
+- Empty, oversized, or control-character queries return 400 `invalid_request`;
+  an unavailable derived index returns 503 `index_unavailable`.
 
-**边界**：非 FTS、无分词/相关性重排/语义；中文分词与 10k 笔记基准属于
-M4（SQLite FTS）。
+**Boundary:** no semantic search, embeddings, reranking, or index-as-source;
+`.localnote/index.db` is disposable derived data rebuilt from Vault bytes.

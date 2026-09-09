@@ -25,6 +25,23 @@ if (typeof HTMLCanvasElement !== "undefined") {
   HTMLCanvasElement.prototype.getContext = (() => null) as typeof HTMLCanvasElement.prototype.getContext;
 }
 
+// jsdom's File/Blob do not implement arrayBuffer(); the attachment upload path
+// reads the file bytes with it, so provide the standard behaviour.
+if (typeof File !== "undefined" && typeof File.prototype.arrayBuffer !== "function") {
+  Object.defineProperty(File.prototype, "arrayBuffer", {
+    configurable: true,
+    writable: true,
+    value(this: File) {
+      return new Promise<ArrayBuffer>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.onerror = () => reject(reader.error ?? new Error("File read failed"));
+        reader.readAsArrayBuffer(this);
+      });
+    },
+  });
+}
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();

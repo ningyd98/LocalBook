@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import { render } from "./render";
 import userEvent from "@testing-library/user-event";
 import { DiffView } from "../../apps/web/src/components/DiffView";
 import { ConfirmDialog } from "../../apps/web/src/components/ConfirmDialog";
@@ -44,8 +45,8 @@ describe("DiffView", () => {
   it("shows both proposed and accepted entries with statuses", () => {
     render(<DiffView diff={entries} />);
     expect(screen.getByText("notes/a.md")).toBeInTheDocument();
-    expect(screen.getByText("proposed")).toBeInTheDocument();
-    expect(screen.getByText("accepted")).toBeInTheDocument();
+    expect(screen.getByText("Proposed")).toBeInTheDocument();
+    expect(screen.getByText("Accepted")).toBeInTheDocument();
     expect(screen.getByText(/create: 0 → 6 bytes/)).toBeInTheDocument();
   });
 

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
+import { render } from "./render";
 import userEvent from "@testing-library/user-event";
 import { AIHistoryPanel } from "../../apps/web/src/components/AIHistoryPanel";
 import { configureWorkspaceApi, useWorkspaceStore } from "../../packages/workspace/src";
@@ -75,8 +76,8 @@ beforeEach(() => {
 });
 
 async function openFirstJob(user: ReturnType<typeof userEvent.setup>) {
-  await screen.findByRole("button", { name: /daily_organizer/ });
-  await user.click(screen.getByRole("button", { name: /daily_organizer/ }));
+  await screen.findByRole("button", { name: /Daily organizer/ });
+  await user.click(screen.getByRole("button", { name: /Daily organizer/ }));
 }
 
 describe("AIHistoryPanel", () => {
@@ -200,7 +201,7 @@ describe("AIHistoryPanel", () => {
     });
     const user = userEvent.setup();
     render(<AIHistoryPanel onClose={() => undefined} />);
-    await screen.findByText("daily_organizer");
+    await screen.findByText("Daily organizer");
     await user.click(screen.getByRole("button", { name: "Daily Organizer" }));
     await user.click(screen.getByRole("button", { name: "Daily Organizer" }));
     await waitFor(() => expect(createJob).toHaveBeenCalledTimes(2));

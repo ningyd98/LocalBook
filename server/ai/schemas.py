@@ -32,6 +32,7 @@ AIErrorCode = Literal[
     "connection_refused",
     "timeout",
     "http_error",
+    "auth_error",
     "invalid_response",
     "no_matching_model",
     "unknown",
@@ -43,6 +44,7 @@ class AIStatusResponse(BaseModel):
     provider: Literal["omlx"] = "omlx"
     endpoint: str | None = None
     qwen_model: str | None = None
+    selected_model: str | None = None
     models: list[DiscoveredModel] = Field(default_factory=list)
     capabilities: AICapabilities = Field(default_factory=AICapabilities)
     error_code: AIErrorCode | None = None

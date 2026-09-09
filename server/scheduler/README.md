@@ -11,7 +11,7 @@ actions of its own and never bypasses Policy.
 1. **Trigger ≠ business**: backends (`apscheduler_backend` preferred,
    `asyncio_backend` degraded fallback) own cron/interval scheduling with
    timezone-aware times, `max_instances=1`, `coalesce` and bounded
-   `misfire_grace_time`.  APScheduler 3.11.x is the locked runtime dependency;
+   `misfire_grace_time`.  The preferred APScheduler dependency is constrained to `>=3.10,<4`;
    when its import fails the process degrades to the pure-`zoneinfo` asyncio
    loop (no silent second scheduler, no auto-install).
 2. **Registration is static**: `daily_organizer` (default `0 23 * * *`),
@@ -20,7 +20,7 @@ actions of its own and never bypasses Policy.
    validated strictly in `server/config.py`.
 3. **Runs are audit rows**: `scheduler_runs` lives in the derived
    `.localnote/index.db` (see `server/history/schema.py`), recording
-   trigger/status/error/started/finished/next-slot and the linked M7 job id.
+   trigger/status/error/started/finished/`scheduled_for` and the linked M7 job id.
    History retention deletes only terminal rows older than `retention_days`
    and keeps the newest run per task, active runs and recovery rows.
 4. **Default is preview**: scheduled/manual Daily/Weekly runs issue a Level-1

@@ -150,6 +150,7 @@ def test_incremental_create_modify_delete_move(
     # create: a new note linking to target
     service.create_bytes("src.md", b"# Src\nsee [[Target]]\n")
     index.handle_event(VaultEvent.created("src.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
     assert index.entry("src.md") is not None
     sources = [s for s, _ in index.backlink_sources("target.md")]
     assert "src.md" in sources
@@ -158,24 +159,29 @@ def test_incremental_create_modify_delete_move(
     _data, digest = service.read_bytes("src.md")
     service.write_bytes("src.md", b"# Src\nno links now\n", digest)
     index.handle_event(VaultEvent.modified("src.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
     assert index.entry("src.md").outgoing == []
     assert index.backlink_sources("target.md") == []
 
     # delete removes entry + backlink contributions + basenames
     service.create_bytes("gone.md", b"# Gone\nsee [[Target]]\n")
     index.handle_event(VaultEvent.created("gone.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
     _data2, digest2 = service.read_bytes("gone.md")
     service.delete_file("gone.md", digest2)
     index.handle_event(VaultEvent.deleted("gone.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
     assert index.entry("gone.md") is None
     assert index.basenames_noext("gone") == []
 
     # move: old path removed, new path indexed
     service.create_bytes("move-me.md", b"# MoveMe\nsee [[Target]]\n")
     index.handle_event(VaultEvent.created("move-me.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
     _data3, digest3 = service.read_bytes("move-me.md")
     service.move_file("move-me.md", "moved.md", digest3)
     index.handle_event(VaultEvent.moved("move-me.md", "moved.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
     assert index.entry("move-me.md") is None
     assert index.entry("moved.md") is not None
     moved = index.entry("moved.md")
@@ -198,6 +204,7 @@ def test_tags_map_updates_on_modify(
     _data, digest = service.read_bytes("t.md")
     service.write_bytes("t.md", b"---\ntags: [two]\n---\n# T\n", digest)
     index.handle_event(VaultEvent.modified("t.md"))
+    index.flush_events()  # P1-3: process buffered events immediately
     assert index.tags_for("one") == []
     assert "t.md" in index.tags_for("two")
 
@@ -241,6 +248,8 @@ def test_directory_events_are_ignored(
     service = vault_service_factory(root)
     index = index_service_factory(service)
     index.handle_event(VaultEvent.created("dir", is_directory=True))
+    index.flush_events()  # P1-3: process buffered events immediately
     index.handle_event(VaultEvent.deleted("dir", is_directory=True))
+    index.flush_events()  # P1-3: process buffered events immediately
     assert index.build_state == "ready"
     assert index.note_count() == 0

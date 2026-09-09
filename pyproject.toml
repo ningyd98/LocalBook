@@ -22,6 +22,11 @@ dependencies = [
     # the preferred single-process backend. Locked below 4.x. When the import
     # is missing at runtime the scheduler degrades to the asyncio fallback.
     "APScheduler>=3.10,<4",
+    # Attachment uploads (PLAN-ATTACHMENTS v1.1 §5.2): FastAPI/Starlette need
+    # python-multipart to parse the streaming `multipart/form-data` endpoint.
+    # Starlette spools small parts in memory and large parts to disk; the
+    # service only ever reads bounded chunks from the UploadFile stream.
+    "python-multipart>=0.0.9,<1",
 ]
 
 [project.optional-dependencies]

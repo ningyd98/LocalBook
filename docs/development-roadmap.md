@@ -1,8 +1,9 @@
-# LocalNote 开发路线图（M0–M8）
+# LocalNote 开发路线图（M0–M12）
 
 > 本文档给出各里程碑的入口、目标、依赖、验收门槛，以及**不可提前实现**
-> 列表。当前阶段：**M8 已实现（Scheduler/可靠性/部署，开发完成待独立
-> 审计）**。M8 边界保持封闭：无云/分布式队列/分布式锁、无自动恢复写入、
+> 列表。当前阶段：**M9–M12 实现完成**（M9 用户直传附件已通过独立审计；
+> M10 文件重命名、M11 从 wikilink 创建嵌套笔记、M12 单栏实时预览为本轮
+> 新增）。边界保持封闭：无云/分布式队列/分布式锁、无自动恢复写入、
 > 无 Level2 非 tag-only 自动执行、无认证/HTTPS 远程暴露默认开启。
 
 ## 总览
@@ -187,7 +188,7 @@ M7 依赖 M6 与 History；M8 依赖 M7。
 - 验收：未过 Policy 的写操作拒绝（403 policy_denied）；五成功一失败事务
   前五恢复；Undo 不调用模型且有 hash 冲突保护；无无限自主循环。
 
-## M8 — Scheduler、可靠性强化与部署选项（开发完成待独立审计）
+## M8 — Scheduler、可靠性强化与部署选项（实现完成，待独立审计）
 
 - 入口：M7。实施依据：`PLAN-M8.md`（本仓库已提交，M8 唯一实施依据）。
 - 内容与完成项（对应 M8-01…M8-14）：
@@ -257,6 +258,47 @@ Vault 文件重建）、真实用户 Vault 操作（测试之外的读写）、
 PostgreSQL/Redis/Celery/Docker/云 AI/远程数据库/Electron/Obsidian
 插件/第三方中文分词依赖。M6 只读 chat/结构化建议（本里程碑范围）不属于
 禁止清单。
+
+## M9 — 用户直传附件（实现完成，独立审计通过）
+
+- 实施依据：`PLAN-ATTACHMENTS.md` v1.1（含用户裁决：右键目录为真实落点）。
+- 新增端点：`POST /api/v1/vault/attachments`（JSON ≤10 MiB）、
+  `POST /api/v1/vault/attachments/multipart`（流式）、
+  `GET/HEAD /api/v1/vault/resource?path=`（只读预览/下载）；既有 5 个 Vault
+  端点语义未变。
+- 四入口（工具栏/拖拽/粘贴/文件树目录右键），落点由入口决定，目标目录必须
+  已存在；禁止覆盖（409 `already_exists`）、同名 `-2/-3` 去重、路径/symlink/
+  隐藏段/`.localnote` 校验沿用 Vault 契约；用户直传不经 PolicyEngine，
+  Agent 写附件仍被 `attachment_write` 永久拒绝。
+- 门禁：`./scripts/check.sh` 全绿（后端 830 passed / 3 skipped，前端 30 文件
+  233 passed），独立审计结论「通过」（3 项建议级发现）。
+
+## M10 — 文件重命名（已实现）
+
+- 复用 `POST /api/v1/vault/file/move` 做同目录移动，**未新增后端端点**。
+- 入口：文件树右键「重命名」/ 双击文件名，行内输入（Enter 确认、Esc 取消）。
+- 名字必须是单一路径段（拒绝 `/`、`\`、`.`、`..`、空名 → `invalid_name`）；
+  预期摘要取磁盘当前 bytes（有未保存修改也能改名，草稿随标签迁移）；
+  目标已存在 → 409，绝不覆盖。目录重命名不在范围内（后端 `move_file` 仅支持文件）。
+
+## M11 — 从 `[[wikilink]]` 创建嵌套笔记（已实现）
+
+- 预览把 `[[目标]]` 渲染为可点击元素，缺失目标标为待创建；点击或右侧
+  「引用链接」面板的「创建」按钮即创建并打开。
+- 解析顺序：先按全库 basename 匹配（与 `server/index/service.py::_resolve_ref`
+  同一规则），命中则直接打开；未命中则落在**源笔记所在目录**，
+  `[[子目录/名]]` 按需逐级建目录（`ensureFolder`）。
+- 安全：`..`/绝对路径/URL/空名拒绝（`invalid_name`）；行内代码与围栏内
+  `[[...]]` 保持字面量；后端解析器/索引/Graph 未修改。
+
+## M12 — 单栏实时预览（Live Preview，已实现）
+
+- `packages/editor/src/livePreviewExt.ts`：在同一个 CodeMirror 实例里用装饰层
+  渲染标题/粗斜体/行内代码/链接与 wikilink/图片 widget/列表/引用/分隔线；
+  **光标所在行保留原始语法**以便就地编辑。
+- 视图切换新增「实时」，原有编辑/预览/分屏三种视图保留
+  （`editorMode: "source" | "live" | "preview" | "split"`）。
+- 正文 bytes 不被改写，保存仍走字节保真 + `expected_sha256` 通道。
 
 ## 变更与审计
 

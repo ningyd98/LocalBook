@@ -30,7 +30,8 @@ class DiscoveryError(Exception):
     """Raised when the oMLX model-list probe cannot produce a model list.
 
     ``code`` is one of the AIStatusResponse ``error_code`` literals:
-    connection_refused | timeout | http_error | invalid_response | unknown.
+    connection_refused | timeout | http_error | auth_error | invalid_response
+    | unknown.
     """
 
     def __init__(self, code: str, message: str) -> None:
@@ -44,6 +45,7 @@ class OMLXDiscoveryConfig:
     """Endpoint + safety limits for a discovery probe."""
 
     base_url: str
+    api_key: str | None = None
     connect_timeout_seconds: float = 0.5
     request_timeout_seconds: float = 2.0
     max_response_bytes: int = 1_000_000
@@ -75,16 +77,28 @@ class OMLXModelDiscoveryClient:
     def models_url(self) -> str:
         return f"{self._config.base_url.rstrip('/')}/models"
 
+    @property
+    def _headers(self) -> dict[str, str]:
+        """Bearer auth only when a key is configured (never an empty header)."""
+        key = (self._config.api_key or "").strip()
+        return {"Authorization": f"Bearer {key}"} if key else {}
+
     async def list_models(self) -> list[DiscoveredModel]:
         timeout = self._timeout
         transport = self._transport
+        headers = self._headers
         async with httpx.AsyncClient(
             timeout=timeout,
             transport=transport,
             follow_redirects=False,
         ) as client:
             try:
-                async with client.stream("GET", self.models_url) as response:
+                async with client.stream("GET", self.models_url, headers=headers) as response:
+                    if response.status_code in (401, 403):
+                        raise DiscoveryError(
+                            "auth_error",
+                            "oMLX endpoint rejected the credentials",
+                        )
                     if response.status_code >= 400:
                         raise DiscoveryError(
                             "http_error",

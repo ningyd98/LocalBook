@@ -1,10 +1,10 @@
-# tests/e2e — Phase 0 placeholder
+# tests/e2e — Browser E2E placeholder
 
-End-to-end tests are intentionally deferred. Phase 0 verifies the API via
-FastAPI TestClient, the frontend via Vitest + mocked fetch, and wiring via
-`./scripts/dev.sh` + `curl`.
+The repository now has M1–M8 backend integration tests through FastAPI
+TestClient and frontend component tests through Vitest with mocked APIs, but no
+real-browser/Playwright suite is implemented in this directory.
 
-- No real user Vault is ever opened, and no Playwright dependency may block
-  the default test run.
-- M1 entry: when a real Vault round-trip exists, add e2e coverage that uses a
-  disposable temporary vault only.
+- Any future browser E2E test must use a disposable temporary Vault and fake or
+  local-only AI adapters; it must never open a real user Vault.
+- Playwright or another browser dependency must not block the default unit and
+  integration test gates unless explicitly adopted by a milestone.

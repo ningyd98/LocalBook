@@ -10,15 +10,26 @@ export class ApiError<T = unknown> extends Error {
   readonly meta: ApiErrorMeta | undefined;
   constructor(message:string,status:number,code?:string,path?:string|null,meta?:ApiErrorMeta){super(message);this.name="ApiError";this.status=status;this.code=code;this.path=path;this.meta=meta}
 }
-async function request<T>(path:string,init?:RequestInit):Promise<T>{
+let vaultSession: string | null = null;
+export const setVaultSession = (session: string | null) => { vaultSession = session; };
+export const getVaultSession = () => vaultSession;
+export async function request<T>(path:string,init?:RequestInit):Promise<T>{
+  const scoped = !path.startsWith("/settings") && path !== "/health" && path !== "/ai/status";
+  const session = vaultSession;
+  const headers = new Headers(init?.headers);
+  if (scoped && session) headers.set("X-LocalNote-Vault-Session", session);
   let response:Response;
-  try{response=await fetch(`${API_BASE}${path}`,init)}catch(error){throw new ApiError(error instanceof Error?error.message:"Network request failed",0,"network_error")}
+  try{response=await fetch(`${API_BASE}${path}`,{ ...init, headers })}catch(error){throw new ApiError(error instanceof Error?error.message:"Network request failed",0,"network_error")}
   let body:unknown=null;
   try{body=await response.json()}catch{/* non-JSON error bodies still surface as a safe ApiError below */}
+  if(scoped && session !== vaultSession) throw new ApiError("Response belongs to a previous vault.",409,"stale_response");
   if(!response.ok){
     const errorBody=body as Partial<VaultErrorBody> & { meta?: ApiErrorMeta };
     const error=errorBody?.error;
     const meta=errorBody?.meta&&typeof errorBody.meta==="object"?errorBody.meta:undefined;
+    if (scoped && ["vault_session_changed", "vault_session_required"].includes(error?.code ?? "")) {
+      window.dispatchEvent(new Event("localnote-vault-changed"));
+    }
     throw new ApiError(typeof error?.message==="string"?error.message:`Request failed (${response.status})`,response.status,typeof error?.code==="string"?error.code:undefined,typeof error?.path==="string"?error.path:null,meta)
   }
   return body as T
@@ -28,6 +39,26 @@ export function fetchAIStatus(){return request<AIStatusResponse>("/ai/status")}
 export function fetchVaultFiles(options:{recursive?:boolean;includeHidden?:boolean}={}){const query=new URLSearchParams({recursive:String(options.recursive??true),include_hidden:String(options.includeHidden??false)});return request<VaultFileTreeResponse>(`/vault/files?${query}`)}
 export function fetchVaultFile(path:string){return request<FileReadResponse>(`/vault/file?${new URLSearchParams({path})}`)}
 export function patchVaultFile(args:{path:string;contentBase64:string;expectedSha256:string}){return request<FileMutationResponse>("/vault/file",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:args.path,content_base64:args.contentBase64,expected_sha256:args.expectedSha256})})}
+/** Create a new folder. The parent directory must already exist (server rule). */
+export function createVaultDirectory(args:{path:string}){return request<FileMutationResponse>("/vault/directory",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:args.path})})}
+/** Move or rename a file (drag & drop, rename). Never overwrites the target. */
+export function moveVaultFile(args:{sourcePath:string;destinationPath:string;expectedSha256?:string|null}){return request<FileMutationResponse>("/vault/file/move",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source_path:args.sourcePath,destination_path:args.destinationPath,expected_sha256:args.expectedSha256??null})})}
+/** Create a new note. The parent directory must already exist (server rule). */
+export function createVaultFile(args:{path:string;contentBase64:string}){return request<FileMutationResponse>("/vault/file",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:args.path,content_base64:args.contentBase64})})}
+/**
+ * JSON/base64 attachment upload (small files, ≤10 MiB).
+ * `targetDirectory` is decided by the caller's entry point; `""` is the Vault
+ * root. The server never infers the current note directory.
+ */
+export function uploadAttachmentBase64(args:{originalName:string;contentBase64:string;targetDirectory:string}){return request<import("./types").AttachmentUploadResponse>("/vault/attachments",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({original_name:args.originalName,content_base64:args.contentBase64,target_directory:args.targetDirectory})})}
+/**
+ * Streaming multipart attachment upload (large files). The browser sets the
+ * multipart boundary itself, so no Content-Type header is passed here.
+ */
+export function uploadAttachmentMultipart(file:File,targetDirectory:string,originalName?:string){const form=new FormData();form.append("file",file,file.name||"attachment");form.append("target_directory",targetDirectory);if(originalName)form.append("original_name",originalName);return request<import("./types").AttachmentUploadResponse>("/vault/attachments/multipart",{method:"POST",body:form})}
+/** Encoded read-only URL for a Vault-root-relative resource path. */
+export function vaultResourceUrl(path:string){return `${API_BASE}/vault/resource?${new URLSearchParams({path})}`}
+export {resolveVaultRelativePath} from "@localnote/protocol";
 /** Encode each path segment (spaces/Chinese/Emoji) while keeping `/` literal. */
 function encodeNotePath(path:string){return path.split("/").map(encodeURIComponent).join("/")}
 function graphQueryString(query:GraphQuery):string{const params=new URLSearchParams();if(query.limit!==undefined)params.set("limit",String(query.limit));if(query.offset!==undefined)params.set("offset",String(query.offset));if(query.tag!==undefined&&query.tag!==null)params.set("tag",query.tag);if(query.include_broken!==undefined)params.set("include_broken",String(query.include_broken));if(query.depth!==undefined)params.set("depth",String(query.depth));if(query.direction!==undefined)params.set("direction",query.direction);const serialized=params.toString();return serialized?`?${serialized}`:""}

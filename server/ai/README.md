@@ -26,14 +26,16 @@ M6 is implemented as a read-only AI layer (PLAN-M6). The surface is:
 
 ## Boundaries
 
-- Read-only: no endpoint writes Markdown, frontmatter, SQLite, graph, history
-  or settings; no Agent/Policy/Diff/Undo/Recovery/Scheduler/WebSocket or
-  streaming; no real user Vault / real oMLX / cloud AI in tests (only
-  `httpx.MockTransport`, fake adapters and `tmp_path` fixtures).
+- This package's M6 workflow endpoints are read-only: they do not write
+  Markdown, frontmatter, SQLite, graph, history, or settings. Controlled M7
+  writes and M8 scheduling are separate domains under `server/agents`,
+  `policies`, `recovery`, `history`, and `scheduler`; they are not AI workflow
+  implementation paths.
 - Embedding/rerank real endpoints are **not** implemented; their absence is
-  never misrepresented as availability.
-- M7 entry: write paths (`Policy → Diff → History → Recovery → user approval
-  → Vault write`) are explicitly out of scope until the M6 audit gate passes.
+  reported as `capability_unavailable`, never misrepresented as availability.
+- No WebSocket or streaming API is exposed. Tests use `httpx.MockTransport`,
+  fake adapters, and `tmp_path` fixtures only; they never use a real user Vault,
+  real oMLX, or cloud AI.
 
-See [`PLAN-M6.md`](../../PLAN-M6.md) and
+See [`PLAN-M6.md`](../../PLAN-M6.md), [`PLAN-M7.md`](../../PLAN-M7.md), and
 [`docs/ai-architecture.md`](../../docs/ai-architecture.md).

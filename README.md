@@ -4,8 +4,9 @@ Markdown-first 本地笔记服务端。Markdown/附件文件是长期唯一事�
 （source of truth）；SQLite、FTS、Embedding、Knowledge Graph、缓存、索引、
 AI history 等未来只作为**可删除重建的派生数据**。
 
-> **当前阶段：M8 已实现（Scheduler / 可靠性强化 / 部署选项），完成本地产品
-> MVP 闭环**。M8 在 M1–M7 基线上新增一个**可停止、单进程、本地优先**
+> **当前阶段：M8 实现完成，待独立审计**（Scheduler / 可靠性强化 / 部署选项）。
+> 已形成可核验的本地产品 MVP 闭环，但“完成”仅表示代码与文档已落地，不等同于
+> 独立发布验收。M8 在 M1–M7 基线上新增一个**可停止、单进程、本地优先**
 > Scheduler：APScheduler 3.11（首选，缺失时降级 asyncio 回环），静态注册
 > `daily_organizer`（默认每天 23:00）与 `weekly_review`（默认周日 20:00），
 > 可选只读 `index_consistency`；定时/手动触发走同一条受控 M7 链
@@ -28,6 +29,12 @@ AI history 等未来只作为**可删除重建的派生数据**。
   - `GET /api/v1/health` → 固定 `{"status":"ok"}`，独立于 AI/Vault/SQLite。
   - `GET /api/v1/ai/status` → 只读探测本地 oMLX，动态发现 Qwen3.5-4B 与
     能力（Phase 0，未变）。
+  - **附件上传（PLAN-ATTACHMENTS v1.1）**：`POST /api/v1/vault/attachments`
+    （JSON ≤10 MiB）、`POST /api/v1/vault/attachments/multipart`（流式）、
+    `GET /api/v1/vault/resource?path=`（只读预览/下载）；四入口
+    （工具栏/拖拽/粘贴/文件树目录右键），落点由入口决定且目标目录必须已
+    存在；禁止覆盖、路径/symlink/隐藏段校验沿用 Vault 契约；用户直传不经过
+    Policy，Agent 写附件仍被 `attachment_write` 永久拒绝。
   - **M6 只读 AI workflow**（`server/ai/workflows.py`）：六个 POST 端点
     （chat/summarize/tags/related/extract_todos/classify），全部只读；版本化
     Prompt Registry 真实正文进入模型请求并回显 `prompt_version`；强 schema
@@ -76,6 +83,17 @@ AI history 等未来只作为**可删除重建的派生数据**。
 - **前端（React + TypeScript + Vite）** M2 Workspace：文件树、Markdown 源码编辑、
   安全只读预览、多标签、split pane 与冲突处理；M5 GraphPanel 与 M6 最小
   AIPanel（Ask/Summarize/Tags/Related，仅建议、不写）已启用。
+  - **M12 单栏实时预览（Live Preview）**：视图切换新增「实时」模式——同一个
+    CodeMirror 实例里渲染标题/粗斜体/行内代码/链接/图片/列表/引用，光标所在行
+    保留原始语法以便就地编辑；正文 bytes 不被改写，原有编辑/预览/分屏视图保留。
+  - **M10 文件重命名**：文件树右键「重命名」或双击文件名，行内改名；走既有
+    `POST /api/v1/vault/file/move`（同目录移动），不覆盖已存在目标，未保存的
+    草稿与打开的标签随文件一起迁移。
+  - **M11 从 `[[wikilink]]` 创建嵌套笔记**：预览里的失效 wikilink 一键创建并打开，
+    新笔记落在源笔记目录（`[[子目录/名]]` 自动逐级建目录）；全库已有同名笔记时
+    直接打开（与索引的 basename 解析规则一致）。
+  - **标题快捷键与工具条**：`Ctrl/⌘+1…6` 设为对应级别、`Ctrl/⌘+0` 取消，同一级别
+    再按一次切回正文；编辑器工具栏也提供 H1–H6 与「正文」按钮。
   预览管线使用 `rehype-raw` 在 `rehype-sanitize` 之前解析 Markdown 内嵌 HTML，随后严格清洗脚本、事件属性和危险 URL；这样保留标准 Markdown HTML 展示能力，同时确保仅安全 HTML 进入 DOM。
 - **M3 只读派生层 + M4 SQLite 派生库**（后端 + 前端）：
   - frontmatter/Properties 只读解析（BOM/CRLF、未知字段逐字保留、tags 规范化、
@@ -175,7 +193,10 @@ python -m compileall server
 - Vault 测试只使用 `tests/fixtures/vault/` 的受控副本（复制进 pytest
   `tmp_path`）或临时目录内自建 fixture；**绝不触碰真实用户 Vault**；
 - symlink 逃逸矩阵在 tmp 目录中构造；AI 探测全部 mock；
-- 更新必须携带读取到的 hash 做冲突检测，服务器永不静默覆盖。
+- 更新必须携带读取到的 hash 做冲突检测，服务器永不静默覆盖；
+- `tests/backend/conftest.py` 的 autouse 隔离 fixture 会清空 `LOCALNOTE_*`
+  环境并屏蔽真实实例配置——**手写临时脚本调 Vault API 时必须显式设置
+  `LOCALNOTE_SETTINGS_FILE`（指向隔离文件）**，否则可能命中真实笔记库。
 
 ## 端口与环境变量
 
@@ -184,11 +205,13 @@ python -m compileall server
 | `LOCALNOTE_HOST` / `LOCALNOTE_SERVER__HOST` | `127.0.0.1` | 后端监听地址（默认仅回环） |
 | `LOCALNOTE_PORT` / `LOCALNOTE_SERVER__PORT` | `3780` | 后端端口 |
 | `LOCALNOTE_SERVER__CORS_ORIGINS` | `["http://127.0.0.1:5173","http://localhost:5173"]` | JSON 数组显式白名单 |
+| `LOCALNOTE_SERVER__SETTINGS_TRUSTED_HOSTS` | `[]` | 额外允许访问 `/api/v1/settings` 的 Host（JSON 数组，如 `["note.ningyd.com"]`）。仅在经反向代理（保留公网 Host）访问时才需要；回环对端校验仍然生效 |
 | `LOCALNOTE_VAULT__ROOT` / `LOCALNOTE_VAULT_ROOT` | 空 | Vault 根目录（必须已存在）。未配置 ⇒ `Not configured`，Vault API 503 |
 | `LOCALNOTE_VAULT__WATCHER_ENABLED` / `..._VAULT_WATCHER_ENABLED` | `true` | 是否启动 watcher（`false` ⇒ `disabled`） |
 | `LOCALNOTE_VAULT__WATCHER_DEBOUNCE_MS` | `200` | watcher 事件去抖窗口（ms） |
 | `LOCALNOTE_VAULT__MAX_FILE_BYTES` | `52428800` | 单文件读写上限（超出 ⇒ 413 `file_too_large`） |
 | `LOCALNOTE_AI__BASE_URL` / `LOCALNOTE_OMLX_BASE_URL` | `http://127.0.0.1:8000/v1` | oMLX OpenAI 兼容地址；置空 ⇒ `not_configured` |
+| `LOCALNOTE_AI__API_KEY` | 空 | 需要认证的 OpenAI 兼容服务使用；以 `Authorization: Bearer <key>` 发送。仅写入（接口只回显 `api_key_set`），保存在实例配置文件（0600） |
 | `LOCALNOTE_AI__CONNECT_TIMEOUT_SECONDS` / `LOCALNOTE_AI__REQUEST_TIMEOUT_SECONDS` | `0.5` / `2.0` | AI 探测超时 |
 | `LOCALNOTE_SCHEDULER__ENABLED` | `true` | Scheduler 总开关（默认开启、可停止；关闭后 status 可见、run 返回 409 `scheduler_disabled`） |
 | `LOCALNOTE_SCHEDULER__TIMEZONE` | `UTC` | 任务时区（IANA 名称，如 `Asia/Shanghai`；非法即配置错误） |
@@ -228,6 +251,28 @@ python -m compileall server
 | `DELETE /api/v1/vault/file` | 删除（必须 `expected_sha256`） | 400/404/409/503 |
 | `POST /api/v1/vault/file/move` | 移动/重命名（不覆盖目标） | 400/404/409/500/503 |
 
+### 附件上传（PLAN-ATTACHMENTS v1.1）
+
+| 方法/路径 | 说明 | 主要错误 |
+|---|---|---|
+| `POST /api/v1/vault/attachments` | 用户直传附件（JSON `content_base64`，≤10 MiB），201 | 400/404/409/413/422/503 |
+| `POST /api/v1/vault/attachments/multipart` | 用户直传附件（multipart 流式，>10 MiB），201 | 400/404/409/413/422/503 |
+| `GET /api/v1/vault/resource?path=` | 只读原始 bytes（图片预览/附件下载） | 400/404/413/503 |
+
+四个入口与落点（`target_directory` 由前端按入口决定，空串 = Vault 根）：
+
+- 文件树目录右键“上传到该目录” → **被右键的那个目录**；
+- 工具栏“插入附件”、编辑器/预览区拖拽、剪贴板粘贴图片 → 当前笔记所在目录
+  （根笔记为空串）。
+
+要点：目标目录**必须已存在**（不自动建 `attachments/YYYY-MM/` 或任何中间
+目录，`attachments/` 不是唯一落点）；禁止覆盖（同名 `-2`/`-3` 递增 + 原子
+no-overwrite 兜底，竞争最终 409 `already_exists`）；隐藏段、`.localnote`、
+symlink、越界路径一律拒绝；正文引用是相对当前笔记的 POSIX 路径（必要时
+`../`）；预览经 `/api/v1/vault/resource?path=...` 读取并由 sanitize 管线
+保护；上传是用户直传旁路，不经过 Policy，`attachment_write` 对 Agent 仍
+永久拒绝。详见 `docs/vault-spec.md` §8.1。
+
 ## Metadata / Links / Search / Index API 一览（M3 契约 + M4 SQLite 底层，只读 + 一个重建）
 
 | 方法/路径 | 说明 | 主要错误 |
@@ -256,11 +301,11 @@ total_nodes,total_edges,truncated},generated_at}`。nodes 按 `(type,id)`、edge
 `target=""`。图只读：不产生任何 SQLite 写入、不写正文。
 
 错误体：`{"error":{"code":"…","message":"…","path":"…|null"}}`。
-错误码：`vault_not_configured`、`vault_unavailable`、`path_traversal`、
-`symlink_escape`、`not_found`、`already_exists`、`file_conflict`、
-`expected_hash_required`、`invalid_request`、`file_too_large`、
-`not_a_file`、`not_a_directory`、`atomic_write_failed`、`watcher_unavailable`、
-`index_unavailable`（M3，503）、`internal_error`。
+本节仅列 Vault/索引域的代表性错误；AI、Job、Policy、History、Recovery、
+Scheduler 各自的稳定错误码见对应模块 README 与架构文档。常见错误包括：
+`vault_not_configured`、`vault_unavailable`、`path_traversal`、
+`symlink_escape`、`file_conflict`、`expected_hash_required`、
+`file_too_large`、`watcher_unavailable`、`index_unavailable`、`internal_error`。
 
 ## AI 状态与只读 workflow（Phase 0 + M6）
 
@@ -268,10 +313,20 @@ total_nodes,total_edges,truncated},generated_at}`。nodes 按 `(type,id)`、edge
 `connected`（发现 Qwen3.5-4B 时返回 ID）。安全默认：端点回显剥离凭据与
 query；错误不含堆栈/响应体。
 
-M6 只读 workflow 详见 [`docs/ai-architecture.md`](./docs/ai-architecture.md) 与
-[`PLAN-M6.md`](./PLAN-M6.md)：输入经严格 DTO 校验；Vault 未配置时空上下文
-chat 仍可回答（S4 修复）；结构化失败返回固定错误码与
-`meta: {prompt_version, model}`；无 AI 写路径。
+M6 提供六个只读 POST workflow（均需严格 DTO，绝不写 Vault）：
+
+| 方法/路径 | 用途 | 关键语义 |
+|---|---|---|
+| `POST /api/v1/ai/chat` | 受限上下文问答 | Vault 未配置时允许空上下文 |
+| `POST /api/v1/ai/summarize` | 总结笔记 | 输出严格结构化并回显 prompt 元数据 |
+| `POST /api/v1/ai/tags` | 建议标签 | 只返回建议，不写 frontmatter |
+| `POST /api/v1/ai/related` | 推荐相关笔记 | 先由 FTS/子串、links/graph 缩小 allow-list |
+| `POST /api/v1/ai/extract_todos` | 提取待办 | 输出严格结构化建议 |
+| `POST /api/v1/ai/classify` | 分类笔记 | 输出严格结构化建议 |
+
+workflow 的模型未配置/离线返回 503，非法模型输出返回 502，能力缺失返回
+`capability_unavailable`；结构化错误携带 `meta: {prompt_version, model}`。
+详见 [`docs/ai-architecture.md`](./docs/ai-architecture.md) 与 [`PLAN-M6.md`](./PLAN-M6.md)。
 
 ## 目录概览
 
@@ -279,7 +334,8 @@ chat 仍可回答（S4 修复）；结构化失败返回固定错误码与
 apps/web/             React + TS + Vite（Phase 0 状态页 + M2 Workspace + M3 Search/Links 面板 + M5 GraphPanel + M6 AIPanel）
 packages/protocol/    共享 API DTO 类型（types only，含 M3/M5 DTO 镜像）
 packages/ui/          M2 UI 基元（Button/Panel/TreeRow/Tab/…）
-packages/editor/      M2 CodeMirror 6 Markdown 编辑器
+packages/editor/      M2 CodeMirror 6 Markdown 编辑器 + M12 实时预览装饰层
+                      （livePreviewExt.ts）
 packages/markdown/    M2 安全只读预览（remark/unified + rehype-raw → rehype-sanitize）
 packages/workspace/   Zustand 会话 store（树/标签/防抖保存/冲突 + M3 relations/search + M5 graph slice + M6 AI slice）
 packages/graph/       M5 Graphology/Sigma 可视化 + WebGL 降级（graphology 0.26.0 / sigma 3.0.3 / 布局 0.6.1/0.10.1）
@@ -302,7 +358,9 @@ tests/                backend/（M1/M2 回归 + M3 矩阵 + M4 矩阵 + M5 test_
                       M6 test_ai_* + M7 test_m7_* + M8 test_m8_{config,scheduler_backend,runner,
                       m7_integration,recovery,retention,index_consistency,api,isolation}；perf/ 可选）
                       frontend/（Vitest：M2 保存/冲突 + M3 Search/NotesLinks/Ribbon/client +
-                      M5 GraphData/GraphStore/GraphView/GraphPanel + M6 AIPanel/AIIsolation）fixtures/…
+                      M5 GraphData/GraphStore/GraphView/GraphPanel + M6 AIPanel/AIIsolation +
+                      M9 附件四入口/预览解析 + M10 RenameEntry + M11 WikilinkCreate +
+                      M12 EditorKeymapMatrix/AppApiRegistration）fixtures/…
 scripts/dev.sh        一键开发启动
 scripts/check.sh      本地验证门禁
 docs/                 vault-spec（M1 状态）/ architecture / ai / roadmap
@@ -334,11 +392,12 @@ LOCALNOTE_SERVER__CORS_ORIGINS='["http://<信任的局域网前端>:5173"]' \
 ## 路线图
 
 M0 Bootstrap（完成）→ **M1 Vault 安全读写（完成）** → M2
-Workspace/Editor/Preview（完成）→ **M3 Metadata/Links/搜索（开发完成待审计）** →
-**M4 SQLite FTS/索引（开发完成待审计）** → **M5 Graph 派生与可视化（已完成）** →
+Workspace/Editor/Preview（完成）→ **M3 Metadata/Links/搜索（实现完成，待独立审计）** →
+**M4 SQLite FTS/索引（实现完成，待独立审计）** → **M5 Graph 派生与可视化（已完成）** →
 **M6 只读 AI（已实现，审计修复轮完成）** → **M7 Policy/Diff/History/Recovery/
-受控 Agent（已实现）** → **M8 Scheduler/可靠性/部署（开发完成待审计，本地
-产品 MVP 闭环）**。详见
+受控 Agent（已实现）** → **M8 Scheduler/可靠性/部署（实现完成，待独立审计；本地
+产品 MVP 闭环）** → **M9 用户直传附件（实现完成，独立审计通过）** →
+**M10 文件重命名 / M11 从 wikilink 创建嵌套笔记 / M12 单栏实时预览（已实现）**。详见
 [`docs/development-roadmap.md`](./docs/development-roadmap.md)。
 
 ## 贡献 / 许可

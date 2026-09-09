@@ -18,6 +18,22 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Prefer the project's pinned Node when nvm is installed. This makes the
+# launcher deterministic even when the interactive shell currently points at
+# another Node major (for example after opening a new terminal).
+if [[ -f "$ROOT/.nvmrc" && -n "${NVM_DIR:-$HOME/.nvm}" ]]; then
+  PINNED_NODE="$(tr -d '[:space:]' < "$ROOT/.nvmrc")"
+  PINNED_NODE_BIN="${NVM_DIR:-$HOME/.nvm}/versions/node/v${PINNED_NODE}/bin"
+  if [[ -x "$PINNED_NODE_BIN/node" ]]; then
+    PATH="$PINNED_NODE_BIN:$PATH"
+    export PATH
+  fi
+fi
+
+# Keep Corepack's cache inside the project when it is available. This avoids
+# failures on machines where the global Corepack cache is not writable.
+export COREPACK_HOME="${COREPACK_HOME:-$ROOT/.cache/corepack}"
+
 LOCALNOTE_HOST="${LOCALNOTE_HOST:-127.0.0.1}"
 LOCALNOTE_PORT="${LOCALNOTE_PORT:-3780}"
 VITE_HOST="${VITE_HOST:-127.0.0.1}"
@@ -54,13 +70,16 @@ if [[ "$NODE_MAJOR" -lt 22 || "$NODE_MAJOR" -ge 23 ]]; then
 fi
 log "node: $(node --version)"
 
-if ! command -v pnpm >/dev/null 2>&1; then
-  if command -v corepack >/dev/null 2>&1; then
-    die "pnpm not found but corepack is available. Run 'corepack enable' (in this shell / project), then retry."
-  fi
+PNPM_CMD=()
+if command -v pnpm >/dev/null 2>&1; then
+  PNPM_CMD=(pnpm)
+elif command -v corepack >/dev/null 2>&1; then
+  # Corepack can run the package manager without modifying global PATH.
+  PNPM_CMD=(corepack pnpm)
+else
   die "pnpm not found. Install it with corepack ('corepack enable') or npm i -g pnpm@9; dev.sh never falls back to npm."
 fi
-log "pnpm: $(pnpm --version)"
+log "pnpm: $("${PNPM_CMD[@]}" --version)"
 
 # ---------------------------------------------------------------------------
 # Dependencies (install only when missing or explicitly requested)
@@ -81,7 +100,7 @@ else
     log "node_modules exists — skipping pnpm install."
   else
     log "running 'pnpm install'."
-    pnpm install
+    "${PNPM_CMD[@]}" install
   fi
 fi
 
@@ -139,8 +158,8 @@ log "starting backend: $PY_VENV ${UVICORN_ARGS[*]}"
 "$PY_VENV" "${UVICORN_ARGS[@]}" &
 BACKEND_PID=$!
 
-log "starting frontend: pnpm --filter @localnote/web dev --host $VITE_HOST --port $VITE_PORT (proxy /api -> $VITE_API_PROXY_TARGET)"
-pnpm --filter @localnote/web dev --host "$VITE_HOST" --port "$VITE_PORT" &
+log "starting frontend: ${PNPM_CMD[*]} --filter @localnote/web dev --host $VITE_HOST --port $VITE_PORT (proxy /api -> $VITE_API_PROXY_TARGET)"
+"${PNPM_CMD[@]}" --filter @localnote/web dev --host "$VITE_HOST" --port "$VITE_PORT" &
 FRONTEND_PID=$!
 
 log "LocalNote dev running — web: http://$VITE_HOST:$VITE_PORT  api: http://$LOCALNOTE_HOST:$LOCALNOTE_PORT/api/v1"

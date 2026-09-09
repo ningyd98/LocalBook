@@ -19,6 +19,8 @@ from .adapters.omlx_client import (
     OMLXDiscoveryConfig,
     OMLXModelDiscoveryClient,
 )
+from .capabilities import resolve_chat_model
+from .errors import AIError
 from .matching import matches_qwen35_4b
 from .schemas import AICapabilities, AIStatus, AIStatusResponse
 
@@ -36,6 +38,7 @@ _MESSAGES: dict[str, str] = {
     "connection_refused": "oMLX endpoint is unreachable",
     "timeout": "oMLX endpoint did not respond before timeout",
     "http_error": "oMLX endpoint returned an HTTP error",
+    "auth_error": "oMLX endpoint rejected the API key (HTTP 401/403)",
     "invalid_response": "oMLX endpoint returned an invalid model list response",
     "unknown": "Unexpected error while probing the oMLX endpoint",
 }
@@ -65,18 +68,22 @@ class AIStatusService:
         self,
         *,
         base_url: str | None,
+        api_key: str | None = None,
         connect_timeout_seconds: float = _DEFAULT_CONNECT_TIMEOUT,
         request_timeout_seconds: float = _DEFAULT_REQUEST_TIMEOUT,
         max_models_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
         qwen_match_pattern: str = _DEFAULT_QWEN_PATTERN,
+        chat_model: str = "auto",
         transport=None,
         client_factory: Callable[[], ModelDiscoveryClient] | None = None,
     ) -> None:
         self._base_url = (base_url or "").strip() or None
+        self._api_key = (api_key or "").strip() or None
         self._connect_timeout = connect_timeout_seconds
         self._request_timeout = request_timeout_seconds
         self._max_bytes = max_models_response_bytes
         self._pattern = qwen_match_pattern
+        self._chat_model = chat_model
         if client_factory is not None:
             self._client_factory = client_factory
         else:
@@ -87,6 +94,7 @@ class AIStatusService:
             # Only called when self._base_url is not None.
             config = OMLXDiscoveryConfig(
                 base_url=self._base_url or "",
+                api_key=self._api_key,
                 connect_timeout_seconds=self._connect_timeout,
                 request_timeout_seconds=self._request_timeout,
                 max_response_bytes=self._max_bytes,
@@ -100,10 +108,12 @@ class AIStatusService:
         """Build from ``server.config.AISettings`` (duck-typed to avoid cycles)."""
         return cls(
             base_url=ai.base_url,
+            api_key=getattr(ai, "api_key", None),
             connect_timeout_seconds=ai.connect_timeout_seconds,
             request_timeout_seconds=ai.request_timeout_seconds,
             max_models_response_bytes=ai.max_models_response_bytes,
             qwen_match_pattern=ai.qwen_match_pattern,
+            chat_model=ai.chat_model,
             transport=transport,
         )
 
@@ -150,7 +160,12 @@ class AIStatusService:
         )
         capabilities = _aggregate_capabilities(models, qwen_model)
 
-        if qwen_model is None:
+        try:
+            selected_model = resolve_chat_model(models, self._chat_model, self._pattern)
+        except AIError:
+            selected_model = None
+
+        if selected_model is None:
             logger.info(
                 "ai_status outcome=connected no_matching_model=True endpoint=%s models=%d",
                 endpoint,
@@ -163,7 +178,7 @@ class AIStatusService:
                 models=models,
                 capabilities=capabilities,
                 error_code="no_matching_model",
-                message=("oMLX endpoint reachable, but no Qwen3.5-4B model was discovered"),
+                message="AI service is reachable, but the configured chat model is unavailable",
                 checked_at=checked_at,
             )
 
@@ -177,12 +192,28 @@ class AIStatusService:
             status=AIStatus.CONNECTED,
             endpoint=endpoint,
             qwen_model=qwen_model,
+            selected_model=selected_model,
             models=models,
             capabilities=capabilities,
             error_code=None,
             message=None,
             checked_at=checked_at,
         )
+
+    async def discover(self) -> tuple[list, str | None]:
+        """Fetch the model list and resolve the configured chat model.
+
+        Raises :class:`DiscoveryError` for any probe failure (including
+        ``auth_error``) so callers can map it to their own error shape. Unlike
+        :meth:`check` this never swallows failures into an offline status: the
+        settings UI needs the concrete reason to explain a 401.
+        """
+        models = await self._client_factory().list_models()
+        try:
+            selected = resolve_chat_model(models, self._chat_model, self._pattern)
+        except AIError:
+            selected = None
+        return models, selected
 
 
 def _aggregate_capabilities(models: list, qwen_model: str | None) -> AICapabilities:

@@ -17,28 +17,28 @@ export interface ThemeColors {
 
 export const THEMES: Record<GraphTheme, ThemeColors> = {
   light: {
-    background: "#f6f5f1",
-    note: "#1d4ed8",
+    background: "#fafafd",
+    note: "#7750c9",
     tag: "#7c3aed",
     link: "#64748b",
     tagEdge: "#a78bfa",
     backlink: "#0d9488",
     broken: "#dc2626",
     ambiguous: "#d97706",
-    label: "#1f2328",
+    label: "#292933",
     halo: "#ffffff",
   },
   dark: {
-    background: "#111827",
-    note: "#60a5fa",
-    tag: "#c084fc",
+    background: "#17171c",
+    note: "#aaa2c8",
+    tag: "#a78bfa",
     link: "#64748b",
     tagEdge: "#a78bfa",
     backlink: "#2dd4bf",
     broken: "#f87171",
     ambiguous: "#fbbf24",
-    label: "#e5e7eb",
-    halo: "#111827",
+    label: "#e7e7ee",
+    halo: "#17171c",
   },
 };
 

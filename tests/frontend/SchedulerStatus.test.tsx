@@ -1,4 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import { render } from "./render";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SchedulerStatus } from "../../apps/web/src/components/SchedulerStatus";
@@ -77,9 +78,9 @@ describe("SchedulerStatus", () => {
     render(<SchedulerStatus />);
     expect(await screen.findByTestId("scheduler-state")).toHaveTextContent("Running");
     expect(screen.getByTestId("scheduler-meta")).toHaveTextContent(/apscheduler · UTC/);
-    expect(screen.getByText("daily_organizer")).toBeInTheDocument();
-    expect(screen.getByTestId("last-daily_organizer")).toHaveTextContent("previewed");
-    expect(screen.getByRole("button", { name: "Run daily_organizer" })).toBeEnabled();
+    expect(screen.getByText("Daily organizer")).toBeInTheDocument();
+    expect(screen.getByTestId("last-daily_organizer")).toHaveTextContent("Preview ready");
+    expect(screen.getByRole("button", { name: "Run Daily organizer" })).toBeEnabled();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
@@ -147,7 +148,7 @@ describe("SchedulerStatus", () => {
       return { ok: false, status: 404, json: async () => ({}) } as Response;
     });
     render(<SchedulerStatus onPreview={onPreview} />);
-    const button = await screen.findByRole("button", { name: "Run daily_organizer" });
+    const button = await screen.findByRole("button", { name: "Run Daily organizer" });
     await userEvent.click(button);
     await waitFor(() => expect(onPreview).toHaveBeenCalledTimes(1));
     expect(onPreview).toHaveBeenCalledWith("job-1", expect.objectContaining({ run_id: "run-1" }));

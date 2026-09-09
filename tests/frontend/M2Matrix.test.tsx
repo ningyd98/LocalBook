@@ -10,7 +10,8 @@
  *    advance under vi fake timers); flushing is done explicitly instead.
  *  - Store-level save tests use real timers and plain awaits.
  */
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { render } from "./render";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FileTree } from "../../apps/web/src/components/FileTree";
@@ -212,31 +213,23 @@ describe("M2 B3 save matrix", () => {
     expect(patch).toHaveBeenCalledTimes(1);
   });
 
-  it("reload discards local content and GETs again; keep-local stops further PATCH", async () => {
-    const fetchFile = vi.fn()
-      .mockResolvedValueOnce(read("server"))
-      .mockResolvedValueOnce(read("remote", "sha256:remote"));
-    const patch = vi.fn(async () => { throw conflictError(); });
-    configureApi({ fetchVaultFile: fetchFile, patchVaultFile: patch });
+  it("keep-local refreshes the hash and explicitly permits a later save; reload discards the draft", async () => {
+    const fetchFile = vi.fn().mockResolvedValueOnce(read("server"))
+      .mockResolvedValueOnce(read("remote", "sha256:remote"))
+      .mockResolvedValueOnce(read("remote again", "sha256:latest"));
+    const patch = vi.fn().mockRejectedValueOnce(conflictError()).mockResolvedValue(mutation);
+    configureApi({fetchVaultFile:fetchFile,patchVaultFile:patch});
     await useWorkspaceStore.getState().openFile("a.md");
     useWorkspaceStore.getState().updateContent("a.md", "local");
     await useWorkspaceStore.getState().save("a.md");
-    expect(patch).toHaveBeenCalledTimes(1);
-    expect(sessionState()?.saveState).toBe("conflict");
-
-    // keep-local: stop writing — later edits/saves never PATCH again.
-    useWorkspaceStore.getState().keepLocal("a.md");
-    useWorkspaceStore.getState().updateContent("a.md", "local again");
-    await useWorkspaceStore.getState().save("a.md");
-    expect(patch).toHaveBeenCalledTimes(1);
-
-    // reload: discard local, GET the remote revision again, clean state.
+    await useWorkspaceStore.getState().keepLocal("a.md");
+    expect(sessionState()?.content).toBe("local");
+    expect(sessionState()?.baseSha256).toBe("sha256:remote");
+    await useWorkspaceStore.getState().save("a.md", "manual");
+    expect(patch.mock.calls[1]?.[0].expectedSha256).toBe("sha256:remote");
     await useWorkspaceStore.getState().reloadConflict("a.md");
-    expect(fetchFile).toHaveBeenCalledTimes(2);
-    expect(sessionState()?.content).toBe("remote");
+    expect(sessionState()?.content).toBe("remote again");
     expect(sessionState()?.dirty).toBe(false);
-    expect(sessionState()?.saveState).toBe("saved");
-    expect(sessionState()?.conflict).toBeNull();
   });
 
   it("reloads invalid UTF-8 as a read-only session instead of throwing", async () => {
@@ -281,14 +274,16 @@ describe("M2 B3 save matrix", () => {
     const patch = vi.fn<WorkspaceApi["patchVaultFile"]>(async () => mutation);
     configureApi({ fetchVaultFile: vi.fn(async () => read(original, "sha256:base")), patchVaultFile: patch });
     await useWorkspaceStore.getState().openFile("a.md");
-    expect(sessionState()?.content).toBe(original);
+    expect(sessionState()?.content).toBe("# A\nline");
+    expect(sessionState()?.hasBOM).toBe(true);
+    expect(sessionState()?.lineSeparator).toBe("CRLF");
 
     // Unedited file: no write-back at all.
     await useWorkspaceStore.getState().save("a.md");
     expect(patch).not.toHaveBeenCalled();
 
     // Edited file: bytes are re-encoded exactly as the session text requires.
-    useWorkspaceStore.getState().updateContent("a.md", `${original}!`);
+    useWorkspaceStore.getState().updateContent("a.md", `${sessionState()?.content}!`);
     await useWorkspaceStore.getState().save("a.md");
     expect(patch).toHaveBeenCalledTimes(1);
     const payload = patch.mock.calls[0]?.[0];
@@ -443,7 +438,8 @@ describe("M2 B3 workspace UI matrix", () => {
     await useWorkspaceStore.getState().openFile("a.md");
     render(<WorkspaceShell />);
 
-    // Both panes render at once (source editor + sanitized markdown preview).
+    // Editing starts in a single column. Split reveals preview without remounting source.
+    await userEvent.click(screen.getByRole("button", { name: "Split" }));
     expect(await screen.findByRole("textbox", { name: "Source editor for a.md" })).toBeInTheDocument();
     const preview = screen.getByRole("article", { name: "Markdown preview" });
     expect(preview).toBeInTheDocument();

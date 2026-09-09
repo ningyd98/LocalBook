@@ -11,7 +11,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
+from tests.backend.client import TestClient
 
 from server.ai.schemas import AICapabilities, AIStatus
 from server.config import AISettings

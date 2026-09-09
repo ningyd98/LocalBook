@@ -111,6 +111,48 @@
 | `PATCH /api/v1/vault/file` | update：必须带 `expected_sha256` |
 | `DELETE /api/v1/vault/file` | delete：必须带 `expected_sha256` |
 | `POST /api/v1/vault/file/move` | move/rename：必须带源 `expected_sha256` |
+| `POST /api/v1/vault/attachments` | 用户直传附件（JSON，≤10 MiB），201 |
+| `POST /api/v1/vault/attachments/multipart` | 用户直传附件（multipart 流式，>10 MiB），201 |
+| `GET /api/v1/vault/resource?path=` | 只读原始 bytes（图片预览/附件下载），非 JSON |
+
+### 8.1 附件上传与资源读取（附件计划 v1.1 已实现）
+
+**入口决定落点，后端只校验执行。** `target_directory` 是必填的
+root-relative POSIX 目录（空串表示 Vault 根），由前端按入口决定：
+
+| 入口 | `target_directory` |
+|---|---|
+| 文件树目录右键“上传到该目录” | 被右键的那个 Vault 目录（根目录为空串） |
+| 编辑器工具栏“插入附件” | 当前笔记所在目录（根笔记为空串） |
+| 编辑器/预览区拖拽 | 当前笔记所在目录 |
+| 剪贴板粘贴图片 | 当前笔记所在目录 |
+
+规则与边界：
+
+- 目标目录**必须已经存在**且必须是普通目录；**不自动创建**目标目录、中间
+  目录或 `attachments/YYYY-MM/` 月目录（需要目录请先用
+  `POST /vault/directory`）。`attachments/` 不是唯一合法落点。
+- 拒绝绝对路径、`..`、NUL、反斜杠、盘符、UNC、空段、隐藏段（以 `.` 开头）
+  与 `.localnote` 段；目录 symlink 与目标 symlink 均按
+  `symlink_escape` 拒绝，提交前后重复复核。
+- 命名：清洗原始 basename（NFC 仅用于名字比较/显示；折叠空白与危险字符为
+  `-`，去掉 Windows 保留名/尾点空格，保留最后一个安全扩展名，UTF-8 截断到
+  255 字节且不截半个字符）；同名不覆盖，按 `-2`/`-3` 递增；最终以
+  no-overwrite 原子提交兜底，竞争失败重试后仍冲突返回 409
+  `already_exists`。
+- 正文引用始终是**相对当前笔记文件目录**的 POSIX 路径（目标在笔记目录之外
+  时确定性生成 `../`），图片 `![alt](相对路径)`，其他附件
+  `[原始显示名](相对路径)`；不新增 `![[...]]` 输出。
+- 资源 URL：预览层先按当前笔记目录把相对引用规范化为 Vault-root-relative
+  path，再编码为 `/api/v1/vault/resource?path=...`；`http(s)`/`data:`/
+  `javascript:` 等协议与事件属性仍被 sanitize 管线处理，资源端点对
+  HTML/SVG 返回 `application/octet-stream` + `X-Content-Type-Options: nosniff`。
+- 传输：单文件 ≤10 MiB（`ATTACHMENT_JSON_MAX_BYTES`）走 JSON
+  `content_base64`；>10 MiB 走 multipart 流式（服务端按 1 MiB 分块读取并
+  增量 SHA-256，超限立即清理临时文件）；硬上限沿用
+  `vault.max_file_bytes`（`LOCALNOTE_VAULT_MAX_FILE_BYTES`，默认 50 MiB）。
+- 附件上传是**用户直传旁路**，不经过 `PolicyEngine`；`attachment_write` 对
+  Agent/受控写路径仍永久 deny（回归测试锁定）。
 
 错误体固定为 `{"error":{"code","message","path"}}`，HTTP 映射：
 400 `path_traversal` / `symlink_escape` / `invalid_request` /
@@ -119,6 +161,18 @@
 `vault_unavailable`；500 固定安全消息。Pydantic schema 失败默认 422
 （安全紧凑，不泄露内部字段路径/类型）。错误与日志绝不包含绝对 root、
 堆栈或正文。
+
+### 8.2 文件重命名与 wikilink 建笔记（M10/M11，复用既有端点）
+
+- **重命名**不新增端点：`POST /vault/file/move` 做同目录移动，`expected_sha256`
+  取磁盘当前 bytes（因此未保存的草稿不会让改名失败），目标已存在 → 409
+  `already_exists`；名字必须是单一路径段（前端拒绝 `/`、`\`、`.`、`..`、空名）。
+  目录重命名仍不支持（`move_file` 仅接受文件）。
+- **从 `[[wikilink]]` 创建笔记**：先按全库 basename 解析（与
+  `server/index/service.py::_resolve_ref` 同一规则），命中即打开；否则在源笔记
+  所在目录用 `POST /vault/file` 创建（`[[子目录/名]]` 用
+  `POST /vault/directory` 逐级补建缺失层级）。`..`/绝对路径/URL/空名一律拒绝，
+  不产生任何文件；正文引用语法（`[[...]]`）与索引/Graph 解析器未改动。
 
 ## 9. M1 现状声明（边界）
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from tests.backend.client import TestClient
 
 from server.ai.adapters.base import ChatResult
 from server.ai.errors import AIAdapterError

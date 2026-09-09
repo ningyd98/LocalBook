@@ -8,7 +8,7 @@ describe("AI client safety contracts", () => {
     }), { status: 503, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
     await expect(fetchAIStatus()).rejects.toMatchObject({ status: 503, code: "ai_unavailable", path: null });
-    expect(fetchMock).toHaveBeenCalledWith("/api/v1/ai/status", undefined);
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/ai/status", { headers: expect.any(Headers) });
   });
 
   it("parses server meta (prompt_version/model) from AI errors (S2)", async () => {

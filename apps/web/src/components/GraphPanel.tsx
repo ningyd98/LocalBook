@@ -1,3 +1,4 @@
+import {useI18n} from "../i18n";
 import { useEffect } from "react";
 import { Button } from "@localnote/ui";
 import { legend, SigmaGraph, graphStats } from "@localnote/graph";
@@ -22,6 +23,7 @@ export function GraphPanel({
   onOpenNote: (path: string) => void;
   onClose: () => void;
 }) {
+  const {tr,locale,errorText} = useI18n();
   const graph = useWorkspaceStore((s) => s.graph);
   const activePath = useWorkspaceStore((s) => s.activePath);
   const theme = useWorkspaceStore((s) => s.theme);
@@ -59,70 +61,70 @@ export function GraphPanel({
   const legendItems = legend(theme === "dark" ? "dark" : "light");
 
   return (
-    <section className="graph-panel" aria-label="Knowledge graph">
+    <section className="graph-panel" aria-label={tr("知识图谱","Knowledge graph")}>
       <header className="graph-panel-header">
-        <h2>Graph</h2>
+        <h2>{tr("知识图谱","Graph")}</h2>
         <span className="graph-panel-root">
           {graph.scope === "local" && graph.response?.root
-            ? `root: ${graph.response.root}`
+            ? `${tr("中心笔记", "Root")}: ${graph.response.root}`
             : graph.scope === "tag" && graph.tag
-              ? `tag: ${graph.tag}`
-              : "global note/tag graph"}
+              ? `${tr("标签", "Tag")}: ${graph.tag}`
+              : tr("探索笔记之间的连接","global note/tag graph")}
         </span>
-        <Button onClick={onClose} aria-label="Close graph view">
+        <Button onClick={onClose} aria-label={tr("关闭图谱视图","Close graph view")}>
           ×
         </Button>
       </header>
 
-      <GraphControls
+      <details className="graph-filters" open><summary>{tr("视图与筛选","View & filters")}</summary><GraphControls
         initial={graph}
         activeNote={activePath}
         loading={graph.status === "loading"}
         onApply={applyControls}
-      />
+      /></details>
 
-      {graph.status === "loading" && <p role="status" className="graph-state">Loading graph…</p>}
+      {graph.status === "loading" && <p role="status" className="graph-state">{tr("正在加载知识图谱…","Loading graph\u2026")}</p>}
       {graph.status === "error" && (
         <p role="alert" className="graph-error">
-          {graph.error?.message ?? "Unable to load the graph."}
+          {errorText(graph.error)}
           <Button onClick={() => applyControls({ scope: graph.scope, note: graph.note, tag: graph.tag, depth: graph.depth, direction: graph.direction, includeBroken: graph.includeBroken, limit: graph.limit, offset: graph.offset })}>
-            Retry
+            {tr("重试", "Retry")}
           </Button>
         </p>
       )}
       {graph.status === "unavailable" && (
         <p role="alert" className="graph-error graph-error-unavailable">
-          The derived index is unavailable — rebuild it on the server, then retry. ({graph.error?.message})
+          {tr("派生索引暂不可用，请在设置中重建索引后重试。", "The derived index is unavailable — rebuild it on the server, then retry.")} 
           <Button onClick={() => applyControls({ scope: graph.scope, note: graph.note, tag: graph.tag, depth: graph.depth, direction: graph.direction, includeBroken: graph.includeBroken, limit: graph.limit, offset: graph.offset })}>
-            Retry
+            {tr("重试", "Retry")}
           </Button>
         </p>
       )}
       {graph.status === "empty" && (
-        <p className="graph-state">No notes or tags match this view.</p>
+        <p className="graph-state">{tr("当前视图中没有匹配的笔记或标签。","No notes or tags match this view.")}</p>
       )}
       {graph.status === "ready" && graph.response && (
         <>
           <div className="graph-meta">
             <span role="status" aria-live="polite">
-              {stats && `${stats.nodes} nodes · ${stats.edges} edges${stats.broken > 0 ? ` · ${stats.broken} broken` : ""}${stats.ambiguous > 0 ? ` · ${stats.ambiguous} ambiguous` : ""}`}
+              {stats && `${stats.nodes} ${tr("节点","nodes")} · ${stats.edges} ${tr("连线","edges")}${stats.broken > 0 ? ` · ${stats.broken} ${tr("失效","broken")}` : ""}${stats.ambiguous > 0 ? ` · ${stats.ambiguous} ${tr("不明确","ambiguous")}` : ""}`}
             </span>
             {graph.response.page.truncated && nextOffset !== null && (
               <Button
                 className="graph-load-more"
                 onClick={() => void loadGraph({ offset: nextOffset })}
               >
-                Load more ({graph.response.nodes.length} of {graph.response.page.total_nodes} nodes shown)
+                {tr(`加载更多（${graph.response.nodes.length} / ${graph.response.page.total_nodes} 节点）`, `Load more (${graph.response.nodes.length} of ${graph.response.page.total_nodes} nodes shown)`)}
               </Button>
             )}
             <Button
               className="graph-refresh"
               onClick={() => void loadGraph({})}
             >
-              Refresh
+              {tr("刷新", "Refresh")}
             </Button>
           </div>
-          <ul className="graph-legend" aria-label="Graph legend">
+          <ul className="graph-legend" aria-label={tr("图谱图例","Graph legend")}>
             {legendItems.map((item) => (
               <li key={item.key} className="graph-legend-item">
                 <span
@@ -130,11 +132,11 @@ export function GraphPanel({
                   style={{ background: item.color }}
                   aria-hidden="true"
                 />
-                {item.label}
+                {locale === "zh-CN" ? ({note:"笔记",tag:"标签",link:"笔记链接","tag-edge":"标签关联",ambiguous:"不明确的链接",broken:"失效链接"} as Record<string,string>)[item.key] ?? item.label : item.label}
               </li>
             ))}
           </ul>
-          <SigmaGraph
+          <SigmaGraph locale={locale}
             response={graph.response}
             theme={theme === "dark" ? "dark" : "light"}
             onNodeClick={handleNodeClick}
@@ -142,7 +144,7 @@ export function GraphPanel({
         </>
       )}
       {graph.status === "idle" && graph.response === null && (
-        <p className="graph-state">Choose a view and press Apply.</p>
+        <p className="graph-state">{tr("选择图谱范围，然后应用筛选。","Choose a view and press Apply.")}</p>
       )}
     </section>
   );

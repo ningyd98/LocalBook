@@ -3,7 +3,8 @@
  * the jsdom fallback path (no WebGL context — the fallback IS the tested
  * path). No real WebGL or real sigma module is ever constructed.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import { render } from "./render";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GraphResponse } from "../../packages/protocol/src";
@@ -92,7 +93,7 @@ describe("SigmaGraph renderer lifecycle (mocked WebGL + renderer)", () => {
       <SigmaGraph response={response()} theme="dark" onNodeClick={onNodeClick} loadRenderer={rendererLoader} />,
     );
     await waitFor(() => expect(constructedGraphs.length).toBe(1));
-    expect(constructorOptions?.backgroundColor).toBe("#111827");
+    expect(constructorOptions?.backgroundColor).toBe("#17171c");
     const graph = constructedGraphs[0] as { order: number; size: number };
     // 3 nodes added; dangling broken edge skipped -> 2 edges
     expect(graph.order).toBe(3);

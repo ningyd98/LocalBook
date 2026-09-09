@@ -1,3 +1,4 @@
+import {useI18n} from "../i18n";
 import type { LinkRef } from "@localnote/protocol";
 import { isEditableMarkdown } from "@localnote/workspace";
 
@@ -5,7 +6,8 @@ import { isEditableMarkdown } from "@localnote/workspace";
  * One outgoing-link row. Resolved markdown targets open the note; broken and
  * ambiguous links are visually marked and never pretend to be navigable.
  */
-export function LinkItem({ link, onOpen }: { link: LinkRef; onOpen: (path: string) => void }) {
+export function LinkItem({ link, onOpen, onCreate }: { link: LinkRef; onOpen: (path: string) => void; onCreate?: (target: string) => void }) {
+  const {tr} = useI18n();
   const label = link.display || link.target || link.raw;
   const suffix = link.section ? `#${link.section}` : link.block ? `^${link.block}` : "";
   const className = [
@@ -42,8 +44,13 @@ export function LinkItem({ link, onOpen }: { link: LinkRef; onOpen: (path: strin
   return (
     <li className={className}>
       {content}
-      {link.broken && <span className="link-badge link-badge-broken">broken</span>}
-      {link.ambiguous && <span className="link-badge link-badge-ambiguous">ambiguous</span>}
+      {link.broken && <span className="link-badge link-badge-broken">{tr("失效","broken")}</span>}
+      {link.broken && onCreate && link.kind !== "web" && link.target && (
+        <button type="button" className="link-create" onClick={() => onCreate(link.target)} title={tr(`新建「${link.target}」`, `Create "${link.target}"`)}>
+          {tr("创建","Create")}
+        </button>
+      )}
+      {link.ambiguous && <span className="link-badge link-badge-ambiguous">{tr("目标不明确","ambiguous")}</span>}
     </li>
   );
 }

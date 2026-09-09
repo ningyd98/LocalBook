@@ -16,9 +16,9 @@ from fastapi.responses import JSONResponse
 from ..ai.errors import AIError
 from ..config import Settings
 from ..policies.errors import M7Error
+from ..runtime import SESSION_HEADER, ConfigRepository, Runtime, SettingsError
 from ..scheduler.errors import SchedulerError
 from ..vault.errors import VaultError, VaultErrorCode
-from ..vault.lifecycle import VaultLifecycle
 from .routes import ai as ai_routes
 from .routes import graph as graph_routes
 from .routes import health as health_routes
@@ -29,6 +29,7 @@ from .routes import links as links_routes
 from .routes import metadata as metadata_routes
 from .routes import scheduler as scheduler_routes
 from .routes import search as search_routes
+from .routes import settings as settings_routes
 from .routes import vault as vault_routes
 
 logger = logging.getLogger("localnote.api")
@@ -113,110 +114,17 @@ def _vault_error_response(exc: VaultError) -> JSONResponse:
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Create an app with one settings snapshot and one Vault lifecycle owner."""
     effective_settings = settings or Settings()
+    repository = ConfigRepository.for_settings(effective_settings, isolated=settings is not None)
+    effective_settings, revision = repository.load(effective_settings)
 
     @asynccontextmanager
     async def app_lifespan(app: FastAPI) -> AsyncIterator[None]:
-        # Settings construction and Vault initialization are isolated: a
-        # missing/nonexistent root records a 503 domain state but does not stop
-        # health or AI status from starting.
-        app.state.settings = effective_settings
-        lifecycle = VaultLifecycle(
-            effective_settings.vault,
-            note_text_cap=effective_settings.index.note_text_cap,
-            index=effective_settings.index,
-        )
-        app.state.vault_lifecycle = lifecycle
-        service = lifecycle.startup()
-        vault_service = None
-        if service is not None:
-            app.state.vault_service = service
-            vault_service = service
-        if lifecycle.index_service is not None:
-            app.state.index_service = lifecycle.index_service
-        logger.info(
-            "localnote api starting host=%s port=%s vault_configured=%s "
-            "ai_configured=%s index_state=%s",
-            effective_settings.server.host,
-            effective_settings.server.port,
-            effective_settings.vault.root is not None,
-            effective_settings.ai.base_url not in (None, ""),
-            lifecycle.index_service.build_state
-            if lifecycle.index_service is not None
-            else "n/a",
-        )
-        # M8: derive History/Agent services + one scheduler singleton.  A
-        # scheduler that fails to start degrades (status ``running=false``)
-        # and never blocks health/Vault/editor/AI/manual jobs.
-        scheduler = None
-        try:
-            from .dependencies import (
-                _agent_service_from,
-                _history_from_index,
-                build_scheduler_service,
-            )
-
-            history = _history_from_index(lifecycle.index_service)
-            agent_service = None
-            if vault_service is not None:
-                agent_service = _agent_service_from(
-                    effective_settings, vault_service, lifecycle.index_service, history
-                )
-                app.state.agent_job_service = agent_service
-            scheduler = build_scheduler_service(
-                effective_settings,
-                vault=vault_service,
-                index=lifecycle.index_service,
-                agent_service=agent_service,
-                history=history,
-            )
-            # Startup crash scan flags interrupted derived rows (jobs and
-            # scheduler runs) as recovery_required — diagnostics only, never
-            # an automatic write/rollback — regardless of whether the
-            # scheduler is enabled this run.
-            scan_result = scheduler.scan_recovery(mark=True)
-            if (
-                scan_result.get("marked_jobs", 0)
-                or scan_result.get("marked_runs", 0)
-            ):
-                logger.warning(
-                    "startup recovery scan flagged %s job(s) / %s run(s) "
-                    "as recovery_required",
-                    scan_result.get("marked_jobs", 0),
-                    scan_result.get("marked_runs", 0),
-                )
-            app.state.scheduler_service = scheduler
-            try:
-                scheduler.start()
-            except Exception:
-                logger.exception("scheduler failed to start; status will report degraded")
-            if scheduler.network_warning():
-                logger.warning(
-                    "LOCALNOTE_HOST is not loopback: the API has no auth/HTTPS; "
-                    "any device on the LAN can call write endpoints. "
-                    "Firewall the port (PLAN-M8 §5.8)."
-                )
-                advice = scheduler.network_advice()
-                if advice is not None:
-                    logger.warning("network exposure advice: %s", advice)
-        except Exception:
-            logger.exception("scheduler construction failed; continuing without it")
+        runtime = app.state.runtime
+        runtime.startup()
         try:
             yield
         finally:
-            if scheduler is not None:
-                try:
-                    scheduler.stop(wait=True, timeout=3.0)
-                except Exception:
-                    logger.exception("scheduler shutdown encountered an error")
-            lifecycle.shutdown()
-            for attr in (
-                "vault_service",
-                "index_service",
-                "agent_job_service",
-                "scheduler_service",
-            ):
-                if hasattr(app.state, attr):
-                    delattr(app.state, attr)
+            runtime.shutdown()
 
     app = FastAPI(
         title="LocalNote Server",
@@ -230,11 +138,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Make settings available for TestClient calls that do not enter the
     # lifespan context.  This does not touch the filesystem.
     app.state.settings = effective_settings
+    app.state.runtime = Runtime(app, effective_settings, repository, revision)
 
     app.add_middleware(
         CORSMiddleware,
         allow_origins=effective_settings.server.cors_origins,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
         allow_credentials=False,
         max_age=600,
@@ -251,11 +160,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(jobs_routes.router)
     app.include_router(history_routes.router)
     app.include_router(scheduler_routes.router)
+    app.include_router(settings_routes.router)
 
     @app.middleware("http")
     async def log_requests(request: Request, call_next):  # type: ignore[no-untyped-def]
         start = time.perf_counter()
-        response = await call_next(request)
+        path = request.url.path
+        scoped = path.startswith("/api/v1/") and path not in {"/api/v1/health", "/api/v1/ai/status"} and not path.startswith("/api/v1/settings")
+        try:
+            if scoped and request.method != "OPTIONS":
+                with app.state.runtime.request(request.headers.get(SESSION_HEADER), write=request.method not in {"GET", "HEAD"}):
+                    response = await call_next(request)
+            else:
+                response = await call_next(request)
+        except SettingsError as exc:
+            response = JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message, "path": None}})
         duration_ms = (time.perf_counter() - start) * 1000.0
         if request.url.path != "/api/v1/health":
             logger.info(
@@ -266,6 +185,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 duration_ms,
             )
         return response
+
+    @app.exception_handler(SettingsError)
+    async def settings_error_handler(request: Request, exc: SettingsError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message, "path": None}})
 
     @app.exception_handler(M7Error)
     async def m7_error_handler(request: Request, exc: M7Error) -> JSONResponse:

@@ -4,7 +4,8 @@
  * Sigma renders via the jsdom fallback path — everything fetch-related is
  * an API double; no backend/network/WebGL.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import { render } from "./render";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GraphPanel } from "../../apps/web/src/components/GraphPanel";
@@ -85,7 +86,7 @@ describe("GraphPanel", () => {
 
     await waitFor(() => expect(fetchLocalGraph).toHaveBeenCalled());
     expect(fetchLocalGraph).toHaveBeenCalledWith("notes/a.md", expect.objectContaining({ depth: 1, direction: "both" }));
-    await screen.findByText(/root: notes\/a\.md/);
+    await screen.findByText(/Root: notes\/a\.md/);
   });
 
   it("opens a note on click and filters by a clicked tag", async () => {
@@ -120,7 +121,7 @@ describe("GraphPanel", () => {
     configureWorkspaceApi(apiWith(fetchGraph));
     render(<GraphPanel onOpenNote={vi.fn()} onClose={vi.fn()} />);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/Derived index is unavailable/);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/derived index is unavailable/i);
     await userEvent.click(screen.getByRole("button", { name: /Retry/ }));
     await screen.findByText(/nodes · .* edges/);
     expect(fetchGraph).toHaveBeenCalledTimes(2);

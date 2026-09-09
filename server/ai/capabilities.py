@@ -22,7 +22,10 @@ def resolve_chat_model(
 ) -> str:
     chat = [m for m in models if m.capabilities.chat or matches_qwen35_4b(m.id, pattern)]
     if requested != "auto":
-        if not any(m.id == requested for m in chat):
+        # An explicit discovered ID is usable when the provider omits optional
+        # capability metadata. Still reject models declared embedding/rerank-only.
+        candidates = [m for m in models if m.capabilities.chat or not (m.capabilities.embedding or m.capabilities.rerank)]
+        if not any(m.id == requested for m in candidates):
             raise AIError(
                 AIErrorCode.MODEL_NOT_FOUND, "Requested model is unavailable", status_code=400
             )

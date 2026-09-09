@@ -1,27 +1,10 @@
 import { useState } from "react";
-import { Button } from "@localnote/ui";
+import { Button, Icon } from "@localnote/ui";
 import { useWorkspaceStore } from "@localnote/workspace";
-
-export function AIPanel({ onClose, onOpenNote }: { onClose: () => void; onOpenNote?: (path: string) => void }) {
-  const path = useWorkspaceStore((s) => s.activePath);
-  const ai = useWorkspaceStore((s) => s.ai);
-  const runAI = useWorkspaceStore((s) => s.runAI);
-  const [question, setQuestion] = useState("");
-  const act = (action: "ask" | "summarize" | "tags" | "related") => {
-    if (!path || ai.status === "loading") return;
-    void runAI(action, action === "ask" ? { note_path: path, question } : { note_path: path, ...(action === "related" ? { limit: 5 } : {}) });
-  };
-  const response = ai.response as any;
-  return <aside className="ai-panel" aria-label="AI assistant">
-    <header className="ai-panel-header"><h2>AI Assistant</h2><Button onClick={onClose} aria-label="Close AI panel">Close</Button></header>
-    {!path ? <p className="ai-hint">Open a Markdown note to use AI.</p> : <>
-      <p className="ai-note">Current note: <code>{path}</code></p>
-      <label className="ai-question">Ask this note<textarea value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask a question…" /></label>
-      <div className="ai-actions"><Button disabled={!question.trim() || ai.status === "loading"} onClick={() => act("ask")}>Ask</Button><Button disabled={ai.status === "loading"} onClick={() => act("summarize")}>Summarize</Button><Button disabled={ai.status === "loading"} onClick={() => act("tags")}>Generate Tags</Button><Button disabled={ai.status === "loading"} onClick={() => act("related")}>Suggest Related</Button></div>
-      {ai.status === "loading" && <p role="status">Thinking…</p>}
-      {ai.status === "offline" && <p role="alert" className="ai-error">AI is offline or unavailable.</p>}
-      {ai.error && ai.status === "error" && <p role="alert" className="ai-error">{ai.error.message}</p>}
-      {response && <div className="ai-result">{"answer" in response && <p>{response.answer}</p>}{"summary" in response && <p>{response.summary}</p>}{"key_points" in response && <ul>{response.key_points.map((v: string) => <li key={v}>{v}</li>)}</ul>}{"tags" in response && <><h3>Suggested tags</h3><ul>{response.tags.map((v: {name:string;reason:string}) => <li key={v.name}><strong>{v.name}</strong> — {v.reason}</li>)}</ul></>}{"related" in response && <><h3>Related notes</h3><ul>{response.related.map((v: {path:string;title:string;reason:string}) => <li key={v.path}><button type="button" className="ai-related-link" onClick={() => onOpenNote?.(v.path)}><strong>{v.title}</strong> <small>{v.path}</small></button><br />{v.reason}</li>)}</ul></>}{"citations" in response && response.citations.length > 0 && <small>{response.citations.length} citation(s)</small>}</div>}
-    </>}
-  </aside>;
+import { useI18n } from "../i18n";
+export function AIPanel({onClose,onOpenNote,enabled=true}:{onClose:()=>void;onOpenNote?:(path:string)=>void;enabled?:boolean}) {
+  const {t,tr,errorText}=useI18n(); const path=useWorkspaceStore(s=>s.activePath); const ai=useWorkspaceStore(s=>s.ai);const runAI=useWorkspaceStore(s=>s.runAI);const stale=useWorkspaceStore(s=>s.vaultStale); const [question,setQuestion]=useState("");
+  const act=(action:"ask"|"summarize"|"tags"|"related")=>{if(!path||!enabled||stale||ai.status==="loading")return;void runAI(action,action==="ask"?{note_path:path,question}:{note_path:path,...(action==="related"?{limit:5}:{})});};
+  const response=ai.response as any;
+  return <section className="ai-panel" aria-label={tr("AI 助手","AI assistant")}><header className="ai-panel-header"><h2>{t.ai.title}</h2><Button onClick={onClose} aria-label={tr("关闭 AI 面板","Close AI panel")}>{t.buttons.close}</Button></header>{!enabled?<p className="ai-hint">{tr("AI 已关闭。可在设置中启用本地 AI 服务。","AI is disabled. Enable the local service in Settings.")}</p>:!path?<div className="side-empty"><Icon name="ai" size={28}/><p>{tr("打开一篇笔记，让 AI 帮你理解、提炼和发现关联。","Open a Markdown note to use AI.")}</p></div>:<><p className="ai-note">{tr("当前笔记","Current note:")}<code>{path}</code></p><label className="ai-question">{tr("围绕这篇笔记提问","Ask this note")}<textarea value={question} onChange={e=>setQuestion(e.target.value)} placeholder={tr("这篇笔记的核心观点是什么？","Ask a question…")} disabled={stale}/></label><div className="ai-actions"><Button disabled={!question.trim()||ai.status==="loading"||stale} onClick={()=>act("ask")}><Icon name="ai" size={14}/>{t.ai.ask}</Button><Button disabled={ai.status==="loading"||stale} onClick={()=>act("summarize")}>{t.ai.summarize}</Button><Button disabled={ai.status==="loading"||stale} onClick={()=>act("tags")}>{t.ai.tags}</Button><Button disabled={ai.status==="loading"||stale} onClick={()=>act("related")}>{tr("发现相关笔记","Suggest Related")}</Button></div>{ai.status==="loading"&&<p role="status" className="ai-hint">{tr("正在思考…","Thinking…")}</p>}{ai.status==="offline"&&<p role="alert" className="ai-error">{tr("AI 暂时离线，请检查设置中的服务地址。","AI is offline or unavailable.")}</p>}{ai.error&&ai.status==="error"&&<p role="alert" className="ai-error">{errorText(ai.error)}</p>}{response&&<div className="ai-result">{"answer"in response&&<p>{response.answer}</p>}{"summary"in response&&<p>{response.summary}</p>}{"key_points"in response&&<ul>{response.key_points.map((v:string)=><li key={v}>{v}</li>)}</ul>}{"tags"in response&&<><h3>{tr("建议标签","Suggested tags")}</h3><ul>{response.tags.map((v:{name:string;reason:string})=><li key={v.name}><span aria-hidden="true">#</span><strong>{v.name}</strong> — {v.reason}</li>)}</ul></>}{"related"in response&&<><h3>{tr("相关笔记","Related notes")}</h3><ul>{response.related.map((v:{path:string;title:string;reason:string})=><li key={v.path}><button className="ai-related-link" onClick={()=>onOpenNote?.(v.path)}><strong>{v.title}</strong><small>{v.path}</small></button><br/>{v.reason}</li>)}</ul></>}{"citations"in response&&response.citations.length>0&&<small>{tr(`${response.citations.length} 处引用`,`${response.citations.length} citation(s)`)}</small>}</div>}</>}</section>;
 }

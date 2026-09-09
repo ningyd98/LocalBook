@@ -45,7 +45,8 @@ def _settings_from_app(request: Request) -> Settings:
 
 
 def get_ai_status_service(request: Request) -> AIStatusService:
-    return AIStatusService.from_ai_settings(_settings_from_app(request).ai)
+    ai = _settings_from_app(request).ai
+    return AIStatusService.from_ai_settings(ai if ai.enabled else ai.model_copy(update={"base_url": None}))
 
 
 def get_ai_workflow_service(request: Request) -> AIWorkflowService:
@@ -66,6 +67,7 @@ def get_ai_workflow_service(request: Request) -> AIWorkflowService:
         settings,
         OpenAICompatibleAdapter(
             settings.base_url,
+            api_key=settings.api_key,
             timeout_seconds=settings.request_timeout_seconds,
             connect_timeout_seconds=settings.connect_timeout_seconds,
             max_response_bytes=settings.max_models_response_bytes,
@@ -164,6 +166,7 @@ def _agent_service_from(
     if ai_settings.enabled and ai_settings.base_url:
         adapter = OpenAICompatibleAdapter(
             ai_settings.base_url,
+            api_key=ai_settings.api_key,
             timeout_seconds=ai_settings.request_timeout_seconds,
             connect_timeout_seconds=ai_settings.connect_timeout_seconds,
             max_response_bytes=ai_settings.max_models_response_bytes,

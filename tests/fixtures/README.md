@@ -1,11 +1,13 @@
 # tests/fixtures
 
-Phase 0 / M1 test fixtures.
+M1–M8 test fixtures used by backend/API and controlled smoke tests.
 
-## AI (Phase 0)
+## AI (M6–M8)
 
 - `ai_models_connected.json` — a valid `/v1/models`-style response containing a
-  Qwen3.5-4B model and an embedding model with explicit capability metadata.
+  Qwen3.5-4B model and an embedding model. The Qwen capability is inferred by
+  the model-matching logic; the fixture's explicit capability metadata applies
+  only where present.
 
 ## Vault (M1)
 

@@ -2,6 +2,8 @@ import type { GraphEdgeType, GraphNodeType } from "@localnote/protocol";
 
 /** Graphology node attributes (backend GraphNode + styling carry-overs). */
 export interface GraphNodeAttrs {
+  x?: number;
+  y?: number;
   kind: GraphNodeType;
   label: string;
   path: string | null;

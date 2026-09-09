@@ -60,7 +60,7 @@ _TAG_EDGE_PREFIX = "tag:"
 
 
 def _pct(value: str) -> str:
-    return "".join("%{:02X}".format(byte) for byte in value.encode("utf-8"))
+    return "".join(f"%{byte:02X}" for byte in value.encode("utf-8"))
 
 
 def note_id(path: str) -> str:

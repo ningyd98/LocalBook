@@ -167,6 +167,9 @@ class DerivedIndexService:
         self._last_skipped = 0
         self._last_failed = 0
         self._last_built_at: datetime | None = None
+        # P1-3: Event buffer to merge consecutive events on the same path
+        self._pending_events: dict[str, tuple[VaultEvent, float]] = {}
+        self._event_timers: dict[str, threading.Timer] = {}
         self._open_database()
 
     # ------------------------------------------------------------------
@@ -727,21 +730,106 @@ class DerivedIndexService:
     # ------------------------------------------------------------------
 
     def handle_event(self, event: VaultEvent) -> None:
-        """Consume one normalized watcher event (create/modify/delete/move)."""
+        """Consume one normalized watcher event (create/modify/delete/move).
+        
+        P1-3 fix: Buffer events for 150ms to merge consecutive operations on the
+        same path (e.g., atomic write generates delete+create). Final processing
+        checks the actual disk state rather than blindly applying the event.
+        """
         try:
             with self._lock:
                 if self._db is None:
                     return  # index unavailable; events are dropped until rebuild
+                
+                # Determine the target path(s)
                 if event.kind == "move":
+                    # Move is handled immediately without buffering
                     self._apply_delete(event.old_path or "")
                     self._apply_create(event.new_path or "")
                     return
-                if event.kind == "delete":
-                    self._apply_delete(event.path or "")
+                
+                path = event.path or ""
+                if not path:
                     return
-                self._apply_create(event.path or "")
+                
+                # Cancel any existing timer for this path
+                old_timer = self._event_timers.pop(path, None)
+                if old_timer is not None:
+                    old_timer.cancel()
+                
+                # Buffer this event
+                now = time.time()
+                self._pending_events[path] = (event, now)
+                
+                # Schedule delayed processing
+                timer = threading.Timer(0.15, self._flush_event, args=[path, now])
+                self._event_timers[path] = timer
+                timer.start()
         except Exception:  # pragma: no cover - defensive
             logger.exception("index event handling failed kind=%s", event.kind)
+
+    def _flush_event(self, path: str, timestamp: float) -> None:
+        """Process buffered event after delay, checking actual disk state.
+        
+        P1-3: This runs after the debounce window. If the event was superseded by
+        a newer one, we do nothing. Otherwise, we check if the file actually
+        exists on disk and index/delete accordingly, ignoring the event type.
+        """
+        try:
+            with self._lock:
+                if self._db is None:
+                    return
+                
+                # Check if this event is still current
+                entry = self._pending_events.get(path)
+                if entry is None or entry[1] != timestamp:
+                    return  # Superseded by a newer event
+                
+                # Remove from pending
+                del self._pending_events[path]
+                self._event_timers.pop(path, None)
+                
+                # Check actual disk state
+                exists = self._file_exists(path)
+                
+                if exists:
+                    # File exists: index it (create or modify)
+                    self._apply_create(path)
+                else:
+                    # File doesn't exist: remove from index
+                    self._apply_delete(path)
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("flush event failed path=%s", path)
+
+    def _file_exists(self, path: str) -> bool:
+        """Check if a file exists in the vault."""
+        try:
+            self._vault.read_bytes(path)
+            return True
+        except VaultError:
+            return False
+
+    def flush_events(self) -> None:
+        """Immediately process all buffered events (test helper).
+        
+        P1-3: In production, events are debounced and processed after 150ms.
+        Tests that want immediate consistency can call this method to force
+        synchronous processing of all pending events.
+        """
+        with self._lock:
+            # Cancel all timers and process events now
+            for timer in self._event_timers.values():
+                timer.cancel()
+            self._event_timers.clear()
+            
+            # Process all pending events
+            for path, (event, _timestamp) in list(self._pending_events.items()):
+                del self._pending_events[path]
+                exists = self._file_exists(path)
+                if exists:
+                    self._apply_create(path)
+                else:
+                    self._apply_delete(path)
 
     def _apply_create(self, path: str) -> None:
         """Index (or re-index) one file event; directories are ignored."""

@@ -14,22 +14,32 @@ class OpenAICompatibleAdapter:
         self,
         base_url: str,
         *,
+        api_key: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_seconds: float = 20,
         connect_timeout_seconds: float = 0.5,
         max_response_bytes: int = 1_000_000,
     ):
         self.base_url = base_url.rstrip("/")
+        self.api_key = (api_key or "").strip() or None
         self.transport = transport
         self.timeout = httpx.Timeout(timeout_seconds, connect=connect_timeout_seconds)
         self.max_bytes = max_response_bytes
 
+    @property
+    def headers(self) -> dict[str, str]:
+        """Bearer auth only when a key is configured (never an empty header)."""
+        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+
     async def _request(self, method: str, path: str, **kwargs):
+        headers = {**self.headers, **(kwargs.pop("headers", None) or {})}
         try:
             async with httpx.AsyncClient(
                 timeout=self.timeout, transport=self.transport, follow_redirects=False
             ) as c:
-                r = await c.request(method, self.base_url + path, **kwargs)
+                r = await c.request(
+                    method, self.base_url + path, headers=headers, **kwargs
+                )
                 if r.status_code >= 400:
                     raise AIAdapterError(
                         "model_not_found" if r.status_code == 404 else "http_error",

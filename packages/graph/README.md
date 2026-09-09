@@ -27,9 +27,15 @@ Sigma/布局**只在挂载 effect 内动态 import**：包模块本身无副作�
   构造失败或无 WebGL 显示 `GraphFallback` 与原因，不显示空白/假成功。
 - `GraphFallback` — 统计（Notes/Tags/Edges/Broken/Ambiguous）+ 可滚动
   Note（打开）与 Tag（过滤）列表。
-- `styles.ts` — light/dark 色板与 legend 条目；Note 圆形主色、Tag 方形辅色、
-  link 实线、tag 虚线、ambiguous 橙点线、broken 红虚线；不只靠颜色。
+- `styles.ts` — light/dark 色板与节点颜色、边颜色/样式及 legend 导出；当前
+  Sigma renderer 统一使用 line 边类型，状态仍通过颜色与可访问文本区分。
 - `types.ts` — Graphology attribute 类型。
+- `index.ts` 还导出 `edgeColor`、`edgeLineStyle`、`legend`、`nodeColor` 与
+  `THEMES`，供调用方构建一致的图例和主题。
+
+`SigmaGraph` 接收 Graphology 数据、theme 与 `onNodeClick` 等显示参数；
+`GraphFallback` 接收统计、节点及打开 Note/Tag 的回调。Tag 过滤由调用方
+负责；组件的 Tag 操作只打开首个匹配 tag 的行为。
 
 **大图策略**：>800 节点提高 label 阈值、>1000 关闭常驻 hover 标签并开启
 `hideEdgesOnMove`；前端不做自动无限加载（load-more 由调用方控制）。

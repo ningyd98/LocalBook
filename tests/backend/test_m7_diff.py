@@ -146,3 +146,15 @@ def test_tag_action_reason_is_required_by_schema() -> None:
             tags=["x"],
             reason="",  # empty reason
         )
+
+
+@pytest.mark.parametrize("header", ["tags: [existing, work]", "tags: existing", "'tags': [existing]", '"tags": [existing]'])
+def test_add_tags_never_creates_duplicate_existing_field(header):
+    source = f"---\n{header}\n---\nbody\n"
+    with pytest.raises(UnsupportedPatch):
+        add_tags(source, ["new"])
+
+
+def test_add_tags_preserves_bom_and_crlf_in_new_lines():
+    source = "\ufeff---\r\ntags:\r\n  - original\r\n---\r\nbody\r\n"
+    assert add_tags(source, ["added"]) == source.replace("  - original\r\n", "  - original\r\n  - added\r\n")

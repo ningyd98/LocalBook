@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
+from tests.backend.client import TestClient
 
 from server.ai.service import AIStatusService
 from server.api import dependencies
@@ -36,11 +36,18 @@ VAULT_FIXTURES_DIR = FIXTURES_DIR / "vault"
 
 
 @pytest.fixture(autouse=True)
-def _clean_localnote_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Isolate every test from developer/CI ``LOCALNOTE_*`` variables."""
+def _clean_localnote_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
+    """Isolate every test from developer/CI ``LOCALNOTE_*`` variables.
+
+    ``LOCALNOTE_SETTINGS_FILE`` is pointed at a per-test path as well: without
+    it ``ConfigRepository`` would load the developer's real instance file
+    (``~/.config/localnote/instances/<host>-<port>/settings.json``) and a
+    configured vault would leak into the "unconfigured vault" contracts.
+    """
     for key in list(os.environ):
         if key.startswith("LOCALNOTE_"):
             monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("LOCALNOTE_SETTINGS_FILE", str(tmp_path / "settings.json"))
     yield
 
 

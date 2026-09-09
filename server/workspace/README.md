@@ -1,7 +1,10 @@
-# server/workspace — Phase 0 placeholder, no runtime behavior
+# server/workspace — Server-side workspace boundary (not implemented)
 
-Future workspace/session service (open docs, tabs state — no FS access by itself).
+The current workspace/session orchestration lives in `packages/workspace` and the
+React app. This server package remains an intentional placeholder: it does not
+own sessions, tabs, persistence, or filesystem access.
 
-- Phase 0 provides **no** session or workspace behavior.
-- Allowed dependencies (future): protocol, VaultService.
-- M1 entry: M2 UI milestone.
+- No server workspace/session REST API is exposed.
+- Client-side state uses injectable `WorkspaceApi`; the server remains stateless.
+- Future entry point: introduce a server session API only with an explicit
+  milestone and protocol contract.

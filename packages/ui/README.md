@@ -1,8 +1,10 @@
 # @localnote/ui
 
-M2 shared accessible primitives: Button, IconButton, Panel, EmptyState, StatusBanner, TreeRow and Tab.
+Shared presentation primitives: `Badge`, `Button`, `IconButton`, `Panel`,
+`EmptyState`, `StatusBanner`, `TreeRow`, and `Tab`.
 
-Reusable UI primitives for the LocalNote workspace UI are implemented here.
-
-- This package contains presentation-only components and no API/domain behavior.
-- Allowed dependencies: React (and future type-only protocol usage).
+- This package contains no API or domain behavior.
+- Runtime dependencies are React and React DOM; protocol imports, if added,
+  should remain type-only.
+- Components provide reusable styling and basic semantics. Callers remain
+  responsible for contextual labels, keyboard flow, and complete ARIA wiring.

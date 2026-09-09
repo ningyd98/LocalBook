@@ -190,6 +190,39 @@ run 审计记录、超时/幂等/清理、启动扫描只标 recovery_required�
 0.0.0.0 显式告警 + CORS；定时/手动都走 M7 受控链、默认只生成 Level1
 preview；详见 README 与 PLAN-M8.md）。
 
+M9 用户直传附件（附件计划 v1.1：`server/vault/attachments.py` 命名/目标目录
+纯函数 + `server/vault/atomic_write.py` 流式 no-overwrite 原语 +
+`VaultService.upload_attachment_{bytes,stream}`/`open_resource` +
+REST `POST /api/v1/vault/attachments`、`POST /api/v1/vault/attachments/multipart`、
+`GET /api/v1/vault/resource`；前端四入口 = 工具栏/编辑器拖拽/粘贴/文件树目录
+右键，落点由入口决定且目标目录必须已存在、不自动建月目录；引用为相对当前
+笔记的 POSIX 路径；上传是用户直传旁路，不经过 PolicyEngine，
+`attachment_write` 对 Agent 仍永久 deny；详见 README 与
+PLAN-ATTACHMENTS.md v1.1）。
+
+M10 文件重命名（文件树右键「重命名」/双击文件名，前端 `renameEntry`）：
+复用既有 `POST /api/v1/vault/file/move` 做同目录移动，**未新增后端端点、未改
+Vault 契约**；名字必须是单一路径段（拒绝 `/`、`\`、`.`、`..`、空名，错误码
+`invalid_name`）；预期摘要取**磁盘当前 bytes**（而不是会话 baseSha256），
+因此「有未保存修改的文件」也能改名且草稿不丢；目标已存在 → 409
+`already_exists`，绝不覆盖；改名成功后打开的标签/会话重指到新路径。
+
+M11 从 `[[wikilink]]` 创建嵌套笔记（Obsidian 式，纯前端 + 既有 Vault 写端点）：
+预览把 `[[目标]]` 渲染成可点击元素（缺失目标标为待创建），点击或「引用链接」
+面板的「创建」按钮调用 `openOrCreateLinkedNote`——先按**全库 basename** 解析
+（与 `server/index/service.py::_resolve_ref` 同一规则），已存在则直接打开；
+否则在**源笔记所在目录**创建（`[[子目录/名]]` 会按需逐级建目录，
+`ensureFolder` 只逐级创建缺失层级）。`..`/绝对路径/URL/空名拒绝
+（`invalid_name`）；行内代码与围栏内的 `[[...]]` 保持字面量；后端解析器、
+索引与 Graph 行为均未修改。
+
+M12 单栏实时预览（Live Preview，`packages/editor/src/livePreviewExt.ts`）：
+在同一个 CodeMirror 实例里用装饰层渲染 Markdown——标题字号/字重、粗斜体、
+行内代码、链接与 wikilink 可点击、图片替换为内联 widget、列表/引用/分隔线
+呈现排版效果；**光标所在行保留原始语法**以便就地编辑。正文 bytes 不被改写，
+保存仍走字节保真通道；原有「编辑 / 预览 / 分屏」三种视图全部保留，新增
+`editorMode: "live"`。
+
 尚未放行（保持禁止，不得“顺手”实现）：
 
 - Graph 物化（独立 graph 表/迁移）与写路径；自动修复 broken/ambiguous；
@@ -199,9 +232,12 @@ preview；详见 README 与 PLAN-M8.md）。
   M3 新增模块只是最小语法扫描器，永不改 bytes.py）；
 - AI embedding/rerank 真实端点（能力探测可见，调用仍返回
   `capability_unavailable`）、未受控 AI 写、Agent loop；
-- 定时任务正文重写/删除/附件覆盖、自动恢复写入/未知冲突自动猜测、
+- 附件内容解析/转码/压缩/缩略/改写、附件全文索引、附件拖动移动/删除、
+  批量上传、断点续传、Agent 写附件、自动创建附件月目录或中间目录、
+  定时任务正文重写/删除/附件覆盖、自动恢复写入/未知冲突自动猜测、
   Level2 非 tag-only 自动执行（M8：默认 Level1 preview，Level2 需要
   显式 tag-only 白名单 + Policy allow）；
+- 目录重命名/移动（后端 `move_file` 仅支持文件）、附件拖动移动、wikilink 自动重命名联动、多人协同、真正的富文本编辑器（Live Preview 仍是源码 + 装饰层，不引入 AST 写路径）；
 - 云/NAS 同步、PostgreSQL/Redis/RabbitMQ/Kafka/Celery/Qdrant/Docker/
   Kubernetes/远程数据库/Electron/Obsidian 插件/外部云 AI、多进程
   分布式 Scheduler/分布式锁（单 uvicorn worker 部署，见 README 警告）、
@@ -230,6 +266,7 @@ server/graph/                  M5 只读 Graph 服务 + DTO（查询时从 M4 �
 server/{agents,policies,actions,history,recovery}/  M7 受控 Agent/Policy/History/事务/Undo
 server/scheduler/              M8 本地调度器（backend/runner/index_job/service；只调度不写业务）
 server/api/routes/scheduler.py M8 scheduler HTTP 编排（status/run/runs/recovery）
+packages/editor/src/livePreviewExt.ts  M12 单栏实时预览装饰层（不改 bytes、不改解析器）
 ```
 
 详细目录见 PLAN.md 第 5 节与 README.md「目录概览」。

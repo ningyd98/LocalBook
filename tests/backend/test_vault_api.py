@@ -13,7 +13,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from tests.backend.client import TestClient
 
 from server.vault.service import VaultService, sha256_bytes
 

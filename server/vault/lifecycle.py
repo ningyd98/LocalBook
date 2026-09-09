@@ -53,7 +53,7 @@ class VaultLifecycle:
         self.index_service: DerivedIndexService | None = None
         self._note_text_cap = note_text_cap
 
-    def startup(self) -> VaultService | None:
+    def startup(self, *, start_watcher: bool = True) -> VaultService | None:
         if self.settings.root is None:
             self.service = None
             self.error = VaultNotConfigured()
@@ -98,7 +98,8 @@ class VaultLifecycle:
             logger.exception("derived index startup scan failed")
         try:
             service.set_event_callback(index.handle_event)
-            service.start()
+            if start_watcher:
+                service.start()
         except Exception:
             logger.exception("vault watcher start failed")
         logger.info(

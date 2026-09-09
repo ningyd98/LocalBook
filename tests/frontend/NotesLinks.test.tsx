@@ -2,7 +2,8 @@
  * M3 NotesLinks panel matrix — presentational component fed by store state;
  * no fetch/backend/network.
  */
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
+import { render } from "./render";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { NotesLinksPanel } from "../../apps/web/src/components/NotesLinksPanel";

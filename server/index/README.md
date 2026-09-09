@@ -9,7 +9,9 @@ PLAN-M4 §5。`DerivedIndexService` 以 `.localnote/index.db`（SQLite，默认
 - `schemas.py` — `NoteIndexEntry`（单篇行）/ `IndexRebuildResponse`（REST
   契约，不变）/ `SearchCandidate`（索引 → 搜索服务的内部行契约）。
 - `schema.py` — `SCHEMA_VERSION=1`、单语句 DDL 表、`MIGRATIONS`
-  （0→1 引导；v1→v2 起逐版本升级）；`notes_fts` FTS5 DDL 由 db.py 探测后创建。
+  （当前提供 0→1 引导；未来版本按序升级）；`notes_fts` FTS5 DDL 由
+  db.py 探测后创建。M7/M8 在同一派生库追加 `ai_jobs`、`ai_job_journal`
+  与 `scheduler_runs` 表，不改变 Markdown 事实源或当前索引 schema 版本。
 - `db.py` — `IndexDatabase`：单连接 + RLock（service 持有）、PRAGMA
   （WAL / synchronous=NORMAL / foreign_keys=ON / busy_timeout=5000）、
   `transaction()`（BEGIN IMMEDIATE / COMMIT / ROLLBACK）、版本化 migration

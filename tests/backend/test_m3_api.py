@@ -12,7 +12,7 @@ import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from tests.backend.client import TestClient
 
 from server.api import dependencies
 from server.api.main import create_app

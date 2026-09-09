@@ -1,6 +1,8 @@
+import {useI18n} from "../i18n";
+import {useTaskLabels,formatTaskTime} from "../i18n/labels";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@localnote/ui";
-import { ApiError, fetchSchedulerStatus, runSchedulerTask } from "../api/client";
+import { fetchSchedulerStatus, runSchedulerTask } from "../api/client";
 import type { SchedulerRunDTO, SchedulerStatusResponse } from "../api/types";
 
 type AgentTaskId = "daily_organizer" | "weekly_review";
@@ -20,6 +22,7 @@ export function SchedulerStatus({
   active?: boolean;
   onPreview?: (agentJobId: string, run: SchedulerRunDTO) => void;
 }) {
+  const {tr,locale,errorText}=useI18n(); const taskLabel=useTaskLabels();
   const [status, setStatus] = useState<SchedulerStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -32,7 +35,7 @@ export function SchedulerStatus({
       setStatus(await fetchSchedulerStatus());
     } catch (caught) {
       const message =
-        caught instanceof ApiError ? caught.message : "Scheduler is unavailable";
+        errorText(caught);
       setStatus(null);
       setError(message);
     } finally {
@@ -54,7 +57,7 @@ export function SchedulerStatus({
           onPreview(run.agent_job_id, run);
         }
       } catch (caught) {
-        setError(caught instanceof ApiError ? caught.message : "Scheduler run failed");
+        setError(errorText(caught));
       } finally {
         setRunningTask(null);
         if (active) void load();
@@ -65,25 +68,25 @@ export function SchedulerStatus({
 
   const running = status?.running ?? false;
   const stateLabel = !status
-    ? "Unavailable"
+    ? tr("不可用","Unavailable")
     : !status.enabled
-      ? "Disabled"
+      ? tr("已关闭","Disabled")
       : status.degraded
-        ? "Degraded"
+        ? tr("降级运行","Degraded")
         : running
-          ? "Running"
-          : "Stopped";
+          ? tr("运行中","Running")
+          : tr("已停止","Stopped");
 
   const agentJobs = (status?.jobs ?? []).filter(
     (job) => job.enabled && (job.id === "daily_organizer" || job.id === "weekly_review"),
   ) as Array<{ enabled: boolean; id: AgentTaskId }>;
 
   return (
-    <article className="scheduler-status" aria-label="Scheduler">
+    <article className="scheduler-status" aria-label={tr("计划任务","Scheduler")}>
       <header className="scheduler-header">
-        <h2 className="status-label">Scheduler</h2>
+        <h2 className="status-label">{tr("计划任务","Scheduler")}</h2>
         <span className="scheduler-state" data-testid="scheduler-state">
-          {loading ? "Loading…" : stateLabel}
+          {loading ? tr("加载中…","Loading…") : stateLabel}
         </span>
         <span className="scheduler-meta" data-testid="scheduler-meta">
           {status ? `${status.backend} · ${status.timezone}` : "—"}
@@ -91,13 +94,12 @@ export function SchedulerStatus({
       </header>
       {status?.network_exposure_warning && (
         <p role="alert" className="scheduler-warning">
-          LAN exposure: the API has no auth/HTTPS. Set an explicit CORS origin and
-          firewall the port.
+          {tr("服务已对局域网开放，当前没有身份验证或 HTTPS。请限制访问来源和网络端口。","LAN exposure: the API has no auth/HTTPS. Set an explicit CORS origin and firewall the port.")}
         </p>
       )}
       {!!status?.recovery_required && (
         <p role="alert" className="scheduler-warning">
-          {status.recovery_required} run(s) need explicit recovery.
+          {tr(`${status.recovery_required} 项任务需要手动恢复。`,`${status.recovery_required} run(s) need explicit recovery.`)}
         </p>
       )}
       {error && (
@@ -108,15 +110,15 @@ export function SchedulerStatus({
       <ul className="scheduler-jobs">
         {(status?.jobs ?? []).map((job) => (
           <li key={job.id}>
-            <strong>{job.id}</strong>
+            <strong>{taskLabel(job.id)}</strong>
             <span className={job.enabled ? "" : "scheduler-disabled"}>
-              {job.enabled ? "enabled" : "disabled"}
+              {job.enabled ? tr("已启用","enabled") : tr("已停用","disabled")}
             </span>
             <small>
-              next: {job.next_run_at ? job.next_run_at.slice(0, 19).replace("T", " ") : "—"}
+              {tr("下次运行：","next:")} {job.next_run_at ? formatTaskTime(job.next_run_at,locale,status?.timezone) : "—"}
             </small>
             {job.last_status ? (
-              <small data-testid={`last-${job.id}`}>last: {job.last_status}</small>
+              <small data-testid={`last-${job.id}`}>{tr("上次：","last:")} {taskLabel(job.last_status)}</small>
             ) : null}
           </li>
         ))}
@@ -128,7 +130,7 @@ export function SchedulerStatus({
             disabled={!status?.enabled || !running || loading || runningTask !== null}
             onClick={() => void runNow(job.id)}
           >
-            {runningTask === job.id ? "Running…" : `Run ${job.id}`}
+            {runningTask === job.id ? tr("运行中…", "Running…") : tr(`立即运行${taskLabel(job.id)}`, `Run ${taskLabel(job.id)}`)}
           </Button>
         ))}
       </div>

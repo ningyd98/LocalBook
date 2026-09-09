@@ -3,7 +3,8 @@
  * stays read-only, related clicks reuse openFile, and stale AI responses
  * never overwrite newer ones (requestVersion guard).
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import { render } from "./render";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AIPanel } from "../../apps/web/src/components/AIPanel";

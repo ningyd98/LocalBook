@@ -1,2 +1,3 @@
-import { Button,StatusBanner } from "@localnote/ui";
-export function ConflictBanner({onReload,onKeepLocal}:{onReload:()=>void;onKeepLocal:()=>void}){return <StatusBanner className="conflict"><strong>External modification detected.</strong><span>Reload to discard local changes, or keep local to stop autosave.</span><span><Button onClick={onReload}>Reload (discard local)</Button><Button onClick={onKeepLocal}>Keep local</Button></span></StatusBanner>}
+import {Button} from "@localnote/ui";
+import {useI18n} from "../i18n";
+export function ConflictBanner({onReload,onKeepLocal}:{onReload:()=>void;onKeepLocal:()=>void}){const{tr}=useI18n();return <div className="conflict-banner" role="alert"><div><strong>{tr("文件已被外部修改","External modification detected")}</strong><p>{tr("重新加载磁盘内容，或明确保留本地内容并在下次保存时覆盖。","Reload the disk version, or keep your local content to overwrite it on the next save.")}</p></div><div><Button onClick={onReload}>{tr("重新加载（放弃本地）","Reload (discard local)")}</Button><Button onClick={onKeepLocal}>{tr("保留本地","Keep local")}</Button></div></div>;}

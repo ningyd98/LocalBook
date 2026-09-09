@@ -14,7 +14,7 @@ import httpx
 # conftest.py sits in tests/backend and is importable because pytest inserts
 # that directory into sys.path (no __init__.py package layout).
 from conftest import make_ai_service
-from fastapi.testclient import TestClient
+from tests.backend.client import TestClient
 
 from server.ai.service import AIStatusService
 

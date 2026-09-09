@@ -90,6 +90,7 @@ def test_hyphenated_queries_are_fts_safe(
             "dash.md"
         )
     )
+    index.flush_events()  # P1-3: process buffered events immediately
     hits = [hit.path for hit in search.search("new-term-abc-123").hits]
     assert "dash.md" in hits
 

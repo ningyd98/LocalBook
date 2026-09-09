@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from tests.backend.client import TestClient
 
 from server.api.main import create_app
 from server.config import AISettings as RealAISettings

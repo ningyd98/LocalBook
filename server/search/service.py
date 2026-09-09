@@ -59,6 +59,11 @@ def _validate_query(query: str) -> None:
 
 
 def _snippet(body: str, terms: list[str]) -> str:
+    """Extract a snippet around the first matching term.
+    
+    P1-4 fix: Safe boundary handling for Chinese text (no word separators).
+    Limits the forward scan to prevent index errors in long continuous text.
+    """
     if not body:
         return ""
     folded = body.casefold()
@@ -69,17 +74,43 @@ def _snippet(body: str, terms: list[str]) -> str:
             best = (index, term)
     if best is None:
         return ""
+    
     index = best[0]
+    term_len = len(best[1])
+    
+    # Safe boundary calculation
     start = max(0, index - _SNIPPET_LEFT)
-    end = min(len(body), index + len(best[1]) + _SNIPPET_RIGHT)
-    while start > 0 and body[start] not in " \t\n":
+    end = min(len(body), index + term_len + _SNIPPET_RIGHT)
+    
+    # Try to find a word boundary, but limit the scan to avoid running off
+    # Limit: scan at most 30 characters forward to find a space
+    original_start = start
+    scan_limit = 30
+    steps = 0
+    while start > 0 and start < len(body) and steps < scan_limit:
+        if body[start] in " \t\n":
+            break
         start += 1
+        steps += 1
+    
+    # If we scanned too far and would cut the matched term, reset to original
+    if start > index:
+        start = original_start
+    
+    # Ensure boundaries are valid
+    start = max(0, min(start, len(body)))
+    end = max(start, min(end, len(body)))
+    
+    # Extract and normalize whitespace
     window = body[start:end]
     window = " ".join(window.split())
+    
+    # Add ellipses
     if start > 0:
         window = "…" + window
     if end < len(body):
         window = window + "…"
+    
     return window
 
 
