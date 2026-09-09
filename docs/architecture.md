@@ -223,6 +223,11 @@ M12 单栏实时预览（Live Preview，`packages/editor/src/livePreviewExt.ts`�
 保存仍走字节保真通道；原有「编辑 / 预览 / 分屏」三种视图全部保留，新增
 `editorMode: "live"`。
 
+AI 超时语义（2026-09 修复）：`/ai/status` 只请求 `/v1/models`，因此即便生成超时，
+状态仍可能是 `connected`；`request_timeout_seconds` 是**生成**预算而非连接预算，
+本地模型需要数十秒，默认值已从 `2.0` 放宽到 `60`（`LOCALNOTE_AI__REQUEST_TIMEOUT_SECONDS`，
+上限 120）。症状是面板显示「AI：已连接」但每次调用返回 503 `ai_timeout`。
+
 M13 任务清单点击切换（`packages/protocol` 纯函数 + 预览/实时两处渲染）：
 `taskItems`/`toggleTaskInSource`/`markTaskCheckboxes` 定位 `- [ ]`/`- [x]` 标记
 （跳过围栏代码块，文档顺序即 remark-gfm 的复选框顺序）；预览把标记替换为带

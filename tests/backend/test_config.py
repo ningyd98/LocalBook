@@ -63,7 +63,7 @@ def test_defaults_with_empty_environment() -> None:
     ]
     assert settings.vault.root is None
     assert settings.ai.base_url == "http://127.0.0.1:8000/v1"
-    assert settings.ai.request_timeout_seconds == 2.0
+    assert settings.ai.request_timeout_seconds == 60.0
     assert settings.ai.connect_timeout_seconds == 0.5
     assert settings.scheduler.enabled is True  # M8: visible-but-stoppable default
     assert settings.scheduler.daily_cron == "0 23 * * *"

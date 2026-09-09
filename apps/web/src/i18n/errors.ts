@@ -21,6 +21,7 @@ const messages: Record<string, string> = {
   file_conflict: "文件已被其他程序修改，请先处理版本冲突。",
   atomic_write_failed: "保存未成功，内容仍保留在编辑器中，请重试。",
   ai_unavailable: "AI 服务暂不可用，请检查连接设置。",
+  ai_timeout: "AI 生成超时：本地模型较慢，可调大服务端 LOCALNOTE_AI__REQUEST_TIMEOUT_SECONDS。",
   ai_disabled: "AI 已关闭，可在设置中启用。",
   ai_not_configured: "尚未配置 AI 服务，请前往设置。",
   ai_model_not_found: "未找到可用的对话模型，请检查模型 ID。",

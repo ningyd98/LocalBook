@@ -215,7 +215,8 @@ python -m compileall server
 | `LOCALNOTE_VAULT__MAX_FILE_BYTES` | `52428800` | 单文件读写上限（超出 ⇒ 413 `file_too_large`） |
 | `LOCALNOTE_AI__BASE_URL` / `LOCALNOTE_OMLX_BASE_URL` | `http://127.0.0.1:8000/v1` | oMLX OpenAI 兼容地址；置空 ⇒ `not_configured` |
 | `LOCALNOTE_AI__API_KEY` | 空 | 需要认证的 OpenAI 兼容服务使用；以 `Authorization: Bearer <key>` 发送。仅写入（接口只回显 `api_key_set`），保存在实例配置文件（0600） |
-| `LOCALNOTE_AI__CONNECT_TIMEOUT_SECONDS` / `LOCALNOTE_AI__REQUEST_TIMEOUT_SECONDS` | `0.5` / `2.0` | AI 探测超时 |
+| `LOCALNOTE_AI__CONNECT_TIMEOUT_SECONDS` | `0.5` | AI 探测连接超时 |
+| `LOCALNOTE_AI__REQUEST_TIMEOUT_SECONDS` | `60` | AI 生成超时。本地模型一次推理常需数秒到数十秒；早期默认 `2.0` 会让 `/ai/status` 显示 connected 而每次生成都返回 `ai_timeout`，故放宽到 60（上限 120） |
 | `LOCALNOTE_SCHEDULER__ENABLED` | `true` | Scheduler 总开关（默认开启、可停止；关闭后 status 可见、run 返回 409 `scheduler_disabled`） |
 | `LOCALNOTE_SCHEDULER__TIMEZONE` | `UTC` | 任务时区（IANA 名称，如 `Asia/Shanghai`；非法即配置错误） |
 | `LOCALNOTE_SCHEDULER__DAILY_CRON` / `WEEKLY_CRON` | `0 23 * * *` / `0 20 * * 0` | Daily/Weekly cron（严格 5 字段 int/`*`/`*/step`） |

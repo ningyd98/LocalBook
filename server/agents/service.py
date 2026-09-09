@@ -195,7 +195,7 @@ class AgentJobService:
                 model=model,
                 temperature=getattr(settings, "temperature", 0.1) if settings else 0.1,
                 timeout_seconds=(
-                    getattr(settings, "request_timeout_seconds", 2.0) if settings else 2.0
+                    getattr(settings, "request_timeout_seconds", 60.0) if settings else 60.0
                 ),
                 max_output_tokens=(
                     getattr(settings, "max_output_tokens", 1200) if settings else 1200

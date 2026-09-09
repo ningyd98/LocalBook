@@ -114,7 +114,10 @@ class AISettings(BaseModel):
     max_context_notes: int = Field(default=8, ge=1, le=50)
     max_context_chars_per_note: int = Field(default=12000, ge=500, le=100000)
     max_context_chars_total: int = Field(default=60000, ge=1000, le=300000)
-    request_timeout_seconds: float = Field(default=2.0, gt=0, le=120)
+    # Local models stream slowly: a 4B MLX model needs several seconds for one
+    # completion, so the generation timeout must not be a connection-style
+    # budget. Status discovery keeps its own short timeouts below.
+    request_timeout_seconds: float = Field(default=60.0, gt=0, le=120)
     connect_timeout_seconds: float = Field(default=0.5, gt=0, le=10)
     max_output_tokens: int = Field(default=1200, ge=64, le=8192)
     max_models_response_bytes: int = Field(default=1_000_000, gt=0)

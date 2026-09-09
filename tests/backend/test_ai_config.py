@@ -19,7 +19,7 @@ def test_m6_ai_settings_defaults_match_plan() -> None:
     assert ai.max_context_notes == 8
     assert ai.max_context_chars_per_note == 12000
     assert ai.max_context_chars_total == 60000
-    assert ai.request_timeout_seconds == 2.0
+    assert ai.request_timeout_seconds == 60.0
     assert ai.connect_timeout_seconds == 0.5
     assert ai.max_output_tokens == 1200
 
