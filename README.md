@@ -370,6 +370,21 @@ scripts/check.sh      本地验证门禁
 docs/                 vault-spec（M1 状态）/ architecture / ai / roadmap
 ```
 
+## 本机常驻服务（launchd）
+
+本仓库在 macOS 上由 launchd 常驻（`~/Library/LaunchAgents/com.ningyd.localbook-{backend,web}.plist`）：
+
+- backend：`127.0.0.1:3780`，环境里带 `LOCALNOTE_VAULT_ROOT` 与
+  `LOCALNOTE_SERVER__SETTINGS_TRUSTED_HOSTS=["note.ningyd.com"]`；
+- web：`127.0.0.1:5173`，`VITE_API_PROXY_TARGET=http://127.0.0.1:3780`；
+- 两者 `KeepAlive=true`：进程退出会被立刻拉起。
+
+**重启请用 `launchctl kickstart -k gui/$(id -u)/com.ningyd.localbook-backend`，不要手工 `kill` 后再手动跑
+`uvicorn`** —— 手工实例不带 plist 里的环境变量，公网域名（nginx → frp → 5173 → 3780）
+访问 `/api/v1/settings` 会被 `settings_local_only` 拒绝，页面显示
+「无法读取服务配置」。同理，手工起的实例会占用 3780/5173，使 launchd 的
+服务反复启动失败（`launchctl list` 中该 job 的状态码非 0）。
+
 ## 局域网暴露警告
 
 默认全部绑定 `127.0.0.1`（回环）。局域网访问必须**显式**设置
