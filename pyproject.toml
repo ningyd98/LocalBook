@@ -1,6 +1,6 @@
 [project]
 name = "localnote-server"
-version = "0.2.0"
+version = "1.0.0"
 description = "LocalNote Server — FastAPI API for a Markdown-first local note server (M1: Vault safe read/write core + watcher)."
 readme = "README.md"
 requires-python = ">=3.12"

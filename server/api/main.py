@@ -128,7 +128,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="LocalNote Server",
-        version="0.2.0",
+        version="1.0.0",
         description=(
             "Markdown-first local note server (M1 Vault core + M3 "
             "metadata/links/search read layer on the M4 SQLite derived index)."

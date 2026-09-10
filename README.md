@@ -4,23 +4,22 @@ Markdown-first 本地笔记服务端。Markdown/附件文件是长期唯一事�
 （source of truth）；SQLite、FTS、Embedding、Knowledge Graph、缓存、索引、
 AI history 等未来只作为**可删除重建的派生数据**。
 
-> **当前阶段：M8 实现完成，待独立审计**（Scheduler / 可靠性强化 / 部署选项）。
-> 已形成可核验的本地产品 MVP 闭环，但“完成”仅表示代码与文档已落地，不等同于
-> 独立发布验收。M8 在 M1–M7 基线上新增一个**可停止、单进程、本地优先**
-> Scheduler：APScheduler 3.11（首选，缺失时降级 asyncio 回环），静态注册
-> `daily_organizer`（默认每天 23:00）与 `weekly_review`（默认周日 20:00），
-> 可选只读 `index_consistency`；定时/手动触发走同一条受控 M7 链
-> （`AgentJobService.plan` → Policy → Diff → History），默认只生成 Level 1
-> preview（`awaiting_confirmation`），仅显式配置且命中 tag-only 白名单 +
-> Policy `allow` 才自动执行。每次触发记录可审计 run 行；启动扫描把中断的
-> job/run 标为 `recovery_required`（只诊断、不自动写/回滚），显式恢复带
-> hash guard；History retention（默认 30 天 / run ≤1000）只清派生终态、不触
-> Vault。局域网访问仍默认关闭（`127.0.0.1`），host 为非回环地址时
-> 状态/日志明确告警并提示显式 CORS 白名单，不实现认证/HTTPS（见“局域网暴露警告”）。
-> 详细边界见 [`PLAN-M8.md`](./PLAN-M8.md)、[`PLAN-M7.md`](./PLAN-M7.md)、
-> [`PLAN-M6.md`](./PLAN-M6.md)、[`PLAN-M5.md`](./PLAN-M5.md)、
-> [`PLAN-M4.md`](./PLAN-M4.md)、[`PLAN-M3.md`](./PLAN-M3.md)、
-> [`PLAN-M1.md`](./PLAN-M1.md)
+> **当前版本：v1.0.0（M0–M13 功能里程碑已实现）**。
+> 完整变更见 [`CHANGELOG.md`](./CHANGELOG.md)。
+>
+> 已形成可核验的本地产品 MVP 闭环：Vault 安全读写与字节保真、Workspace/编辑器/
+> 预览、Metadata/Links/搜索/SQLite 派生索引、Graph、只读 AI、受控 Agent/Policy/
+> History/Recovery、Scheduler，以及 M9 附件直传、M10 文件重命名、M11 从 wikilink
+> 创建嵌套笔记、M12 单栏实时预览、M13 任务清单点击切换。
+>
+> 1.0 的边界仍然封闭：**不实现账号/认证/HTTPS**（局域网或公网暴露请自行用防火墙
+> 与反代 Basic Auth 保护，见「局域网暴露警告」），不做 AI 写正文、Agent 递归
+> loop、目录重命名、附件移动/全文索引、embedding/rerank 真实端点与真富文本
+> （AST）编辑路径。里程碑依据见
+> [`PLAN-ATTACHMENTS.md`](./PLAN-ATTACHMENTS.md)、[`PLAN-M8.md`](./PLAN-M8.md)、
+> [`PLAN-M7.md`](./PLAN-M7.md)、[`PLAN-M6.md`](./PLAN-M6.md)、
+> [`PLAN-M5.md`](./PLAN-M5.md)、[`PLAN-M4.md`](./PLAN-M4.md)、
+> [`PLAN-M3.md`](./PLAN-M3.md)、[`PLAN-M1.md`](./PLAN-M1.md)
 > 与 [`docs/development-roadmap.md`](./docs/development-roadmap.md)。
 
 ## 已实现能力

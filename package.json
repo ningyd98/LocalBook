@@ -1,6 +1,6 @@
 {
   "name": "localnote",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "LocalNote Server — Markdown-first local note server (Phase 0 bootstrap).",
   "packageManager": "pnpm@9.15.0",
