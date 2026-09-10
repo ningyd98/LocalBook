@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "./render";
 import { Preview } from "../../packages/markdown/src/Preview";
 import { renderMarkdown } from "../../packages/markdown/src/render";
-import { markTaskCheckboxes, taskItems, toggleTaskInSource } from "../../packages/protocol/src";
+import { markTaskCheckboxes, resolveVaultRelativePath, taskItems, toggleTaskInSource } from "../../packages/protocol/src";
 import { CodeMirrorEditor } from "../../packages/editor/src/CodeMirrorEditor";
 import { configureWorkspaceApi, useWorkspaceStore } from "../../packages/workspace/src";
 import type { EditorSession, WorkspaceApi } from "../../packages/workspace/src";
@@ -126,5 +126,40 @@ describe("live preview checkbox", () => {
     // under jsdom; a bubbling click event exercises the same code path.
     fireEvent.click(boxes[0] as HTMLElement);
     expect(onToggleTask).toHaveBeenCalledWith(0);
+  });
+});
+
+describe("live preview images resolve against the note directory", () => {
+  it("resolves a relative image path before building the resource URL", async () => {
+    // The shell injects exactly this resolver; passing the authored relative
+    // path to the resource endpoint verbatim 404s for notes in a sub-folder.
+    const resolveResourceUrl = (path: string) => {
+      const resolved = resolveVaultRelativePath("2026.9/2026-09-09.md", path);
+      return resolved ? `/api/v1/vault/resource?${new URLSearchParams({ path: resolved })}` : null;
+    };
+    const { container } = render(<CodeMirrorEditor
+      value={withLines("![shot.png](shot.png)")}
+      theme="light"
+      onChange={vi.fn()}
+      livePreview={{ notePath: "2026.9/2026-09-09.md", resolveResourceUrl }}
+    />);
+    // The caret sits on the image line by default, which keeps its raw text;
+    // move it away so the image widget renders.
+    const view = (container.querySelector(".cm-content") as unknown as { cmView: { view: { state: { doc: { length: number } }; dispatch: (spec: unknown) => void } } }).cmView.view;
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    await waitFor(() => expect(container.querySelector(".cm-lp-image img")).toBeTruthy());
+    const src = container.querySelector(".cm-lp-image img")!.getAttribute("src")!;
+    expect(decodeURIComponent(src)).toBe("/api/v1/vault/resource?path=2026.9/shot.png");
+    expect(decodeURIComponent(src)).not.toBe("/api/v1/vault/resource?path=shot.png");
+  });
+
+  it("keeps the authored text when the path cannot be resolved", async () => {
+    const { container } = render(<CodeMirrorEditor
+      value={withLines("![x](../../../escape.png)")}
+      theme="light"
+      onChange={vi.fn()}
+      livePreview={{ notePath: "2026.9/a.md", resolveResourceUrl: () => null }}
+    />);
+    await waitFor(() => expect(container.querySelector(".cm-lp-image")).toBeNull());
   });
 });
