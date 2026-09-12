@@ -1,6 +1,6 @@
 {
   "name": "@localnote/protocol",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Shared API DTO types between LocalNote backend (server/ai/schemas.py is the Python contract source) and frontend. Phase 0: types only, no runtime code.",

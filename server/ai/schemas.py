@@ -41,7 +41,12 @@ AIErrorCode = Literal[
 
 class AIStatusResponse(BaseModel):
     status: AIStatus
-    provider: Literal["omlx"] = "omlx"
+    provider: Literal["omlx", "openai", "openai-compatible", "custom"] = "omlx"
+    # Applied provider profile (PLAN-PROVIDERS). ``provider`` keeps its legacy
+    # meaning (the route kind); these name the profile the route came from.
+    active_profile_id: str | None = None
+    active_profile_name: str | None = None
+    active_profile_kind: str | None = None
     endpoint: str | None = None
     qwen_model: str | None = None
     selected_model: str | None = None

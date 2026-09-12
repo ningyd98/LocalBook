@@ -3,8 +3,41 @@ import { FileTree } from "./FileTree";
 import type { FileTreeState } from "@localnote/workspace";
 import { useWorkspaceStore } from "@localnote/workspace";
 import { useI18n } from "../i18n";
-export function Sidebar({tree,onRetry,onToggle,onOpen,onNewNote,onNewFolder,onMove,onOpenAttachment,onUploadToDirectory,onRename,activeAttachmentPath}:{tree:FileTreeState;onRetry:()=>void;onToggle:(p:string)=>void;onOpen:(p:string)=>void;onNewNote?:()=>void;onNewFolder?:()=>void;onMove?:(source:string,destinationDirectory:string)=>void;onOpenAttachment?:(p:string)=>void;onUploadToDirectory?:(directory:string)=>void;onRename?:(path:string,newName:string)=>Promise<string>;activeAttachmentPath?:string|null}) {
-  const { tr, errorText } = useI18n(); const active = useWorkspaceStore(s => s.activePath);
+
+export function Sidebar({ tree, onRetry, onToggle, onOpen, onNewNote, onNewFolder, onMove, onOpenAttachment, onUploadToDirectory, onRename, activeAttachmentPath, onNewChildNote, onNewSiblingNote, onDelete }: {
+  tree: FileTreeState;
+  onRetry: () => void;
+  onToggle: (p: string) => void;
+  onOpen: (p: string) => void;
+  onNewNote?: () => void;
+  onNewFolder?: () => void;
+  onMove?: (source: string, destinationDirectory: string) => void;
+  onOpenAttachment?: (p: string) => void;
+  onUploadToDirectory?: (directory: string) => void;
+  onRename?: (path: string, newName: string) => Promise<string>;
+  activeAttachmentPath?: string | null;
+  /** Create a document nested inside the right-clicked note/folder. */
+  onNewChildNote?: (path: string) => void;
+  /** Create a document beside the right-clicked note. */
+  onNewSiblingNote?: (path: string) => void;
+  /** Ask to delete the right-clicked file or folder. */
+  onDelete?: (path: string) => void;
+}) {
+  const { tr, errorText } = useI18n();
+  const active = useWorkspaceStore(s => s.activePath);
   const messages = { idle: tr("准备工作区…", "Preparing workspace…"), loading: tr("正在读取笔记…", "Loading Vault files…"), not_configured: tr("连接本机文件夹，开始整理你的笔记。", "Connect a local folder to start organizing your notes."), unavailable: tr("笔记库暂时无法访问，请检查文件夹后重试。", "The vault is unavailable. Check the folder and retry."), error: tree.error ? errorText(tree.error) : tr("无法加载文件", "Unable to load files."), ready: tr("笔记库中还没有文件", "No files in this Vault.") };
-  return <section className="file-browser"><header className="side-header"><span>{tr("文件", "Files")}</span><div className="side-header-actions">{onNewNote && <IconButton onClick={onNewNote} title={tr("新建笔记", "New note")} aria-label={tr("新建笔记", "New note")}><Icon name="note" size={15}/></IconButton>}{onNewFolder && <IconButton onClick={onNewFolder} title={tr("新建文件夹", "New folder")} aria-label={tr("新建文件夹", "New folder")}><Icon name="folder" size={15}/></IconButton>}{onUploadToDirectory && <IconButton onClick={() => onUploadToDirectory("")} title={tr("上传到笔记库根目录", "Upload to vault root")} aria-label={tr("上传到笔记库根目录", "Upload to vault root")}><Icon name="paperclip" size={15}/></IconButton>}<IconButton onClick={onRetry} title={tr("刷新文件", "Refresh files")} aria-label={tr("刷新文件", "Refresh")}><Icon name="refresh" size={15}/></IconButton></div></header>{tree.status === "ready" && tree.entries.length ? <FileTree entries={tree.entries} expanded={tree.expandedPaths} activePath={active} onToggle={onToggle} onOpen={onOpen} onMove={onMove} onOpenAttachment={onOpenAttachment} onUploadToDirectory={onUploadToDirectory} onRename={onRename} activeAttachmentPath={activeAttachmentPath}/> : <div className="side-empty"><Icon name="folder" size={28}/><p role="status">{messages[tree.status]}</p>{tree.status === "ready" && (onNewNote || onNewFolder) && <div className="side-empty-actions">{onNewNote && <button type="button" className="side-empty-action" onClick={onNewNote}><Icon name="note" size={14}/>{tr("新建第一篇笔记", "Create your first note")}</button>}{onNewFolder && <button type="button" className="side-empty-action" onClick={onNewFolder}><Icon name="folder" size={14}/>{tr("新建文件夹", "New folder")}</button>}</div>}</div>}</section>;
+  return <section className="file-browser">
+    <header className="side-header">
+      <span>{tr("文件", "Files")}</span>
+      <div className="side-header-actions">
+        {onNewNote && <IconButton onClick={onNewNote} title={tr("新建笔记", "New note")} aria-label={tr("新建笔记", "New note")}><Icon name="note" size={15}/></IconButton>}
+        {onNewFolder && <IconButton onClick={onNewFolder} title={tr("新建文件夹", "New folder")} aria-label={tr("新建文件夹", "New folder")}><Icon name="folder" size={15}/></IconButton>}
+        {onUploadToDirectory && <IconButton onClick={() => onUploadToDirectory("")} title={tr("上传到笔记库根目录", "Upload to vault root")} aria-label={tr("上传到笔记库根目录", "Upload to vault root")}><Icon name="paperclip" size={15}/></IconButton>}
+        <IconButton onClick={onRetry} title={tr("刷新文件", "Refresh files")} aria-label={tr("刷新文件", "Refresh")}><Icon name="refresh" size={15}/></IconButton>
+      </div>
+    </header>
+    {tree.status === "ready" && tree.entries.length
+      ? <FileTree entries={tree.entries} expanded={tree.expandedPaths} collapsed={tree.collapsedPaths} activePath={active} onToggle={onToggle} onOpen={onOpen} onMove={onMove} onOpenAttachment={onOpenAttachment} onUploadToDirectory={onUploadToDirectory} onRename={onRename} activeAttachmentPath={activeAttachmentPath} onNewChildNote={onNewChildNote} onNewSiblingNote={onNewSiblingNote} onNewRootNote={onNewNote} onDelete={onDelete}/>
+      : <div className="side-empty"><Icon name="folder" size={28}/><p role="status">{messages[tree.status]}</p>{tree.status === "ready" && (onNewNote || onNewFolder) && <div className="side-empty-actions">{onNewNote && <button type="button" className="side-empty-action" onClick={onNewNote}><Icon name="note" size={14}/>{tr("新建第一篇笔记", "Create your first note")}</button>}{onNewFolder && <button type="button" className="side-empty-action" onClick={onNewFolder}><Icon name="folder" size={14}/>{tr("新建文件夹", "New folder")}</button>}</div>}</div>}
+  </section>;
 }

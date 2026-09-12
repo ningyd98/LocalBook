@@ -9,6 +9,20 @@ from ..schemas import AICapabilities, DiscoveredModel
 from .base import ChatResult
 
 
+def _error_kind(status_code: int) -> str:
+    """Map an HTTP failure to the adapter's stable error kind.
+
+    404 stays "model_not_found"; 401/403 are an explicit "auth_error" so the
+    settings UI can tell a wrong or missing key from a generic HTTP failure
+    (PLAN-PROVIDERS §4).
+    """
+    if status_code == 404:
+        return "model_not_found"
+    if status_code in {401, 403}:
+        return "auth_error"
+    return "http_error"
+
+
 class OpenAICompatibleAdapter:
     def __init__(
         self,
@@ -19,12 +33,15 @@ class OpenAICompatibleAdapter:
         timeout_seconds: float = 20,
         connect_timeout_seconds: float = 0.5,
         max_response_bytes: int = 1_000_000,
+        trust_env: bool = False,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = (api_key or "").strip() or None
         self.transport = transport
         self.timeout = httpx.Timeout(timeout_seconds, connect=connect_timeout_seconds)
         self.max_bytes = max_response_bytes
+        # Shell proxies are opt-in (see ``AISettings.use_env_proxy``).
+        self.trust_env = bool(trust_env)
 
     @property
     def headers(self) -> dict[str, str]:
@@ -35,14 +52,17 @@ class OpenAICompatibleAdapter:
         headers = {**self.headers, **(kwargs.pop("headers", None) or {})}
         try:
             async with httpx.AsyncClient(
-                timeout=self.timeout, transport=self.transport, follow_redirects=False
+                timeout=self.timeout,
+                transport=self.transport,
+                follow_redirects=False,
+                trust_env=self.trust_env,
             ) as c:
                 r = await c.request(
                     method, self.base_url + path, headers=headers, **kwargs
                 )
                 if r.status_code >= 400:
                     raise AIAdapterError(
-                        "model_not_found" if r.status_code == 404 else "http_error",
+                        _error_kind(r.status_code),
                         http_status=r.status_code,
                     )
                 if len(r.content) > self.max_bytes:

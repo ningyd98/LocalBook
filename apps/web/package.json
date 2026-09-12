@@ -1,6 +1,6 @@
 {
   "name": "@localnote/web",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "LocalNote M2 workspace",

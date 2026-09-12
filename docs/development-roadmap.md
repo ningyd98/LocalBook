@@ -309,6 +309,40 @@ PostgreSQL/Redis/Celery/Docker/云 AI/远程数据库/Electron/Obsidian
   同一个文档序号。
 - 未新增运行时依赖；正文 bytes 语义与保存通道不变。
 
+## M14 — LocalBook RAG（已实现）
+
+- 架构与配置见 [`rag-architecture.md`](./rag-architecture.md)，交付报告见
+  [`../M14-REPORT.md`](../M14-REPORT.md)。
+- 数据链：Markdown（只读）→ Markdown 感知分块 → 独立 EmbeddingProvider →
+  SQLite 向量索引（`rag_documents`/`rag_chunks`/`rag_chunks_fts`/`rag_embeddings`/
+  `rag_index_state`）→ FTS5 + 向量混合检索（RRF）→ 可选 Link 第三路 →
+  可选重排 → EvidencePack → 已有 AI Provider 生成 → 引用校验。
+- API：`POST /api/v1/rag/query`、`POST /api/v1/rag/search`（不调用 Chat）、
+  `POST /api/v1/rag/index/rebuild`、`GET /api/v1/rag/index/status`；
+  设置新增 `PATCH /api/v1/settings/rag`（只重建派生 RAG 层，不动 Vault）。
+- 前端：AI 检查器新增「知识库检索」模式（`RagPanel`），设置新增「RAG 知识库」
+  分区（`RagSettings`：状态、embedding 端点、分块与 Top-K、重建按钮）。
+- **第 ③ 项 Link/Graph 加权检索（已实现，默认关闭）**：`LinkRetriever`
+  （`server/rag/retrieval/link.py`）做 wikilink 出边 / backlink 入边 / same-tag /
+  2-hop 图邻居四信号加权，接入 RRF 第三路（`link_add_only=True`，只新增不重排）；
+  开关与 5 个权重暴露到 `RagSettings`、`PATCH /api/v1/settings/rag` 与前端设置页，
+  `link_retrieval` 状态在 `/rag/index/status` 如实报告（含 `link_unavailable` 降级）。
+  **实测中性零增益**：`hybrid_link` recall@5/@10/MRR = 1.000/1.000/0.917，与纯
+  `hybrid` 逐位相同（MRR +0.000）——理由是语料只有 3 条可参与图扩展的解析边
+  （4 条链接行 = 3 wikilink + 1 embed，其中 1 条 wikilink 断链被建图丢弃），且候选池
+  (`candidate_k=30`) 大于语料规模（15 篇 = 15 个 chunk，覆盖全库两遍），图邻居本就在
+  直接候选池内；非加性全量融合反而把 MRR 打到 0.558。因此**默认关闭**，不宣称任何增益。
+- 增量：watcher 事件去抖后按 `content_hash` 判定；仅重新嵌入变化的 chunk；
+  rename 不重新嵌入；embedding 失败标记 `pending/failed` 且不影响编辑/FTS/启动。
+- 未做（明确出界）：Obsidian Plugin Runtime、GraphRAG、Agentic RAG、
+  独立向量数据库服务、把整库塞给模型、由 LLM 决定文件路径或引用。
+- 门禁（2026-09-12 实测，含 ③）：后端 **1195 passed / 5 skipped**（其中
+  `tests/rag` 272 passed / 2 skipped）、前端 **355 passed / 3 skipped**（exit 0）；
+  `./scripts/rag-eval.sh` 272 passed + 评估表 + 门槛校验通过（exit 0）；
+  `python -m compileall server`、protocol/workspace/web typecheck、web build 通过。
+- Link 路若要重新评估，需先换语料（100+ 篇、链接密集、`candidate_k` 远小于语料规模）；
+  详见 [`../M14-REPORT.md`](../M14-REPORT.md) §9.5 与 §11 第 7 条。
+
 ## 变更与审计
 
 - 每个里程碑开始前必须补充并审核详细计划（像 PLAN.md 这样）。

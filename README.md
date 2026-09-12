@@ -1,424 +1,406 @@
-# LocalNote Server
+# LocalNote
 
-Markdown-first 本地笔记服务端。Markdown/附件文件是长期唯一事实源
-（source of truth）；SQLite、FTS、Embedding、Knowledge Graph、缓存、索引、
-AI history 等未来只作为**可删除重建的派生数据**。
+> **本地优先的 Markdown 笔记工作台 —— 文件即数据，服务只是门面。**
 
-> **当前版本：v1.0.0（M0–M13 功能里程碑已实现）**。
-> 完整变更见 [`CHANGELOG.md`](./CHANGELOG.md)。
->
-> 已形成可核验的本地产品 MVP 闭环：Vault 安全读写与字节保真、Workspace/编辑器/
-> 预览、Metadata/Links/搜索/SQLite 派生索引、Graph、只读 AI、受控 Agent/Policy/
-> History/Recovery、Scheduler，以及 M9 附件直传、M10 文件重命名、M11 从 wikilink
-> 创建嵌套笔记、M12 单栏实时预览、M13 任务清单点击切换。
->
-> 1.0 的边界仍然封闭：**不实现账号/认证/HTTPS**（局域网或公网暴露请自行用防火墙
-> 与反代 Basic Auth 保护，见「局域网暴露警告」），不做 AI 写正文、Agent 递归
-> loop、目录重命名、附件移动/全文索引、embedding/rerank 真实端点与真富文本
-> （AST）编辑路径。里程碑依据见
-> [`PLAN-ATTACHMENTS.md`](./PLAN-ATTACHMENTS.md)、[`PLAN-M8.md`](./PLAN-M8.md)、
-> [`PLAN-M7.md`](./PLAN-M7.md)、[`PLAN-M6.md`](./PLAN-M6.md)、
-> [`PLAN-M5.md`](./PLAN-M5.md)、[`PLAN-M4.md`](./PLAN-M4.md)、
-> [`PLAN-M3.md`](./PLAN-M3.md)、[`PLAN-M1.md`](./PLAN-M1.md)
-> 与 [`docs/development-roadmap.md`](./docs/development-roadmap.md)。
+[![version](https://img.shields.io/badge/version-1.1.0-blue.svg)](./CHANGELOG.md)
+[![python](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](https://www.python.org/)
+[![node](https://img.shields.io/badge/node-%3E%3D22%20%3C23-339933.svg)](https://nodejs.org/)
+[![tests](https://img.shields.io/badge/tests-1562%20passed-brightgreen.svg)](#测试与门禁)
+[![license](https://img.shields.io/badge/license-UNLICENSED-lightgrey.svg)](#许可)
 
-## 已实现能力
+LocalNote（仓库名 **LocalBook**）是一套**跑在你自己机器上**的 Markdown 笔记服务：
+一个 FastAPI 后端 + 一个 React/Vite 前端，直接读写你本地磁盘上的 Markdown 目录
+（Vault）。它可以指向一个**已经存在的** Obsidian 库或任何 Markdown 文件夹——
+目录结构就是层级、`.md` 文件就是数据，不需要导入、导出或迁移。
 
-- **后端 API（FastAPI）**：
-  - `GET /api/v1/health` → 固定 `{"status":"ok"}`，独立于 AI/Vault/SQLite。
-  - `GET /api/v1/ai/status` → 只读探测本地 oMLX，动态发现 Qwen3.5-4B 与
-    能力（Phase 0，未变）。
-  - **附件上传（PLAN-ATTACHMENTS v1.1）**：`POST /api/v1/vault/attachments`
-    （JSON ≤10 MiB）、`POST /api/v1/vault/attachments/multipart`（流式）、
-    `GET /api/v1/vault/resource?path=`（只读预览/下载）；四入口
-    （工具栏/拖拽/粘贴/文件树目录右键），落点由入口决定且目标目录必须已
-    存在；禁止覆盖、路径/symlink/隐藏段校验沿用 Vault 契约；用户直传不经过
-    Policy，Agent 写附件仍被 `attachment_write` 永久拒绝。
-  - **M6 只读 AI workflow**（`server/ai/workflows.py`）：六个 POST 端点
-    （chat/summarize/tags/related/extract_todos/classify），全部只读；版本化
-    Prompt Registry 真实正文进入模型请求并回显 `prompt_version`；强 schema
-    （`extra="forbid"`）+ 本地严格 JSON 校验；related 先经 FTS/substring +
-    links/graph 程序缩小候选并做 allow-list；embedding/rerank 缺失只报
-    `capability_unavailable` 不伪装。
-  - **M7 受控 Agent/History**：`POST/GET /api/v1/jobs`、
-    `POST /api/v1/jobs/{id}/accept|reject`、`GET /api/v1/history`、
-    `GET /api/v1/history/{id}`、`POST /api/v1/history/{id}/undo`。默认
-    preview 不落盘；错误统一为 `{"error":{"code","message","path"},
-    "meta":{}}`；Daily Organizer / Weekly Review 各最多一次模型调用。
-  - **M8 Scheduler（本阶段）**：`GET /api/v1/scheduler/status`、
-    `POST /api/v1/scheduler/run/{task}`（仅三个稳定任务）、
-    `GET /api/v1/scheduler/runs`、`POST /api/v1/scheduler/recovery/{run_id}`
-    （默认 `diagnose`；`rollback_if_safe` 带 hash guard；`retry_preview`
-    绕过 recovery 门禁新建 preview run，原 `recovery_required` 标记不变）。
-    run 记录含 trigger/status/error/started/finished；定时与手动共用同一
-    受控 handler；手动请求 `confirm=false`（或缺省）永远只生成 Level 1
-    preview —— 即使服务端开启 Level 2 也不自动执行（`confirm` 真实参与
-    决策，写入仍只经 `POST /api/v1/jobs/{id}/accept`）。**调度错过语义**：
-    本地进程不提供关机期间唤醒保证；`coalesce=true` 时错过窗口最多补跑
-    一次、超出 misfire grace 的槽位直接跳过，不写入 `missed` 运行行
-    （run 枚举无 `missed`，也没有该历史状态）。`idempotency_key` 是
-    确定性的 `task:scheduled_for` 审计标签（非唯一键；同槽重复触发会追加
-    新 run 行，重入防护由 active-run 门禁 + 每任务锁完成）。scheduler
-    disabled/stopped 只返回稳定错误码，不影响任何核心 API。
-  - **Vault Core（M1）**：`/api/v1/vault/files`（列表）、`/api/v1/vault/file`
-    （读/建/原子更新/删，JSON base64 + SHA-256）、`/api/v1/vault/file/move`
-    （移动/重命名）。
-- **安全**：路径词法校验 → resolve + containment；拒绝 `../`、绝对路径、
-  NUL、反斜杠、drive/UNC 与**一切 symlink**（逃逸文件/目录/父链均拒绝）；
-  错误体 `{"error":{"code","message","path"}}`，不泄漏绝对 root/堆栈/正文。
-- **保真**：Markdown/附件以原始 bytes 读写（无 parser），BOM/LF/CRLF/
-  非 UTF-8/未知 Obsidian 语法逐字节保留；hash = 原始 bytes SHA-256。
-- **原子写 + 冲突**：同目录临时文件 + fsync + 原子替换；update/delete/move
-  一律要求客户端提交 `expected_sha256`，外部修改/hash 过期 → 409
-  `file_conflict`，绝不静默覆盖。
-- **`.localnote/`（M1 占位 + M4 派生库）**：Vault 初始化只建目录 +
-  `state.json` 占位；M4 索引层在 `.localnote/index.db` 建立 SQLite 派生库
-  （WAL、版本表 migration、FTS5）。整个 `.localnote/` 可删除后由索引层
-  从 Markdown 文件完整重建，正文/附件 hash 不变；SQLite 从不作为正文
-  唯一数据源。
-- **Watcher（M1）**：watchdog 锁定依赖；create/modify/delete/move 归一化 +
-  去抖；事件流入 SQLite 索引增量（upsert/delete/move，与 rebuild 同锁串行）。
-  watchdog 缺失/启动失败时读写照常，状态记录 `unavailable`。
-- **前端（React + TypeScript + Vite）** M2 Workspace：文件树、Markdown 源码编辑、
-  安全只读预览、多标签、split pane 与冲突处理；M5 GraphPanel 与 M6 最小
-  AIPanel（Ask/Summarize/Tags/Related，仅建议、不写）已启用。
-  - **M12 单栏实时预览（Live Preview）**：视图切换新增「实时」模式——同一个
-    CodeMirror 实例里渲染标题/粗斜体/行内代码/链接/图片/列表/引用，光标所在行
-    保留原始语法以便就地编辑；正文 bytes 不被改写，原有编辑/预览/分屏视图保留。
-  - **M10 文件重命名**：文件树右键「重命名」或双击文件名，行内改名；走既有
-    `POST /api/v1/vault/file/move`（同目录移动），不覆盖已存在目标，未保存的
-    草稿与打开的标签随文件一起迁移。
-  - **M11 从 `[[wikilink]]` 创建嵌套笔记**：预览里的失效 wikilink 一键创建并打开，
-    新笔记落在源笔记目录（`[[子目录/名]]` 自动逐级建目录）；全库已有同名笔记时
-    直接打开（与索引的 basename 解析规则一致）。
-  - **标题快捷键与工具条**：`Ctrl/⌘+1…6` 设为对应级别、`Ctrl/⌘+0` 取消，同一级别
-    再按一次切回正文；编辑器工具栏也提供 H1–H6 与「正文」按钮。
-  - **Obsidian 式任务清单**：`- [ ]` / `- [x]` 在预览与「实时」模式里渲染成可点击
-    复选框，点一下即改写源码标记（完成项自动加删除线）；围栏代码块内的
-    `- [ ]` 不参与，改动走既有字节保真 + `expected_sha256` 保存通道。
-  预览管线使用 `rehype-raw` 在 `rehype-sanitize` 之前解析 Markdown 内嵌 HTML，随后严格清洗脚本、事件属性和危险 URL；这样保留标准 Markdown HTML 展示能力，同时确保仅安全 HTML 进入 DOM。
-- **M3 只读派生层 + M4 SQLite 派生库**（后端 + 前端）：
-  - frontmatter/Properties 只读解析（BOM/CRLF、未知字段逐字保留、tags 规范化、
-    失败诊断）→ `GET /api/v1/metadata/{note}`（仍以 Vault 实时读为准）；
-  - wikilink/embed/heading/block/alias 解析与 outgoing/backlinks（改从 SQLite
-    `links`/`backlinks` 表读）→ `GET /api/v1/links/{note}`、
-    `GET /api/v1/backlinks/{note}`（resolved 可点击、broken/ambiguous 标记）；
-  - 搜索主路径 FTS5 MATCH（英文/数字/tag/basename，bm25 排序；中文/Emoji/
-    FTS 不可用时降级到关键词子串路径，中文任意长度可查）→
-    `GET /api/v1/search?q=`（DTO 不变）；
-  - SQLite 派生索引（`DerivedIndexService`：单连接 + RLock、版本表 migration、
-    watcher 事件增量、单事务全量重建）与 `POST /api/v1/index/rebuild`；启动顺序
-    Vault 初始化 → 打开/迁移 index.db → 全量扫描 → watcher 事件流入
-    （`set_event_callback`）。
-  - 索引故障只影响 metadata/links/search（503 `index_unavailable`），
-    不影响 health/AI/Vault 读写/M2 编辑器；单篇失败隔离为诊断，不写回正文。
-  - 前端：Ribbon Search 启用 + SearchPanel + NotesLinksPanel（outgoing/backlinks
-    点击打开）；不做 Command Palette/Quick Open。
-- **`./scripts/dev.sh`** 一键启动前后端：依赖/版本/端口检查、信号转发与
-  优雅清理。
+它不做账号、不做云端、不做遥测，也不把笔记塞进私有数据库。SQLite、全文索引、
+向量库、知识图谱、AI 历史全都只是**可以随时删掉重建的派生数据**，随时
+`rm -rf .localnote/` 都不会掉一个字。
 
-## 架构图（M1–M5 数据流）
+---
+
+## 目录
+
+- [为什么是 LocalNote](#为什么是-localnote)
+- [核心特性](#核心特性)
+- [界面](#界面)
+- [架构](#架构)
+- [技术栈](#技术栈)
+- [快速开始](#快速开始)
+- [配置](#配置)
+- [测试与门禁](#测试与门禁)
+- [常驻运行与部署](#常驻运行与部署)
+- [项目结构](#项目结构)
+- [版本与路线图](#版本与路线图)
+- [文档](#文档)
+- [已知限制](#已知限制)
+- [许可](#许可)
+
+## 为什么是 LocalNote
+
+大多数笔记产品把数据放进自己的数据库和格式里，你要么接受它的锁，要么永远
+留在导出/导入的中间态。LocalNote 反过来：**你的文件夹就是产品**。
+
+| 原则 | 具体含义 |
+|---|---|
+| **文件是唯一事实源** | 正文永远是 Vault 里的原始 `.md` / 附件文件。服务不持有正文副本，不写 frontmatter 之外的结构标记。 |
+| **派生数据可删除重建** | 索引、FTS5、向量、图谱、缓存、审计全部在 `.localnote/`，删掉后由 Markdown 完整重建，正文 hash 不变。 |
+| **字节保真** | Markdown 按**原始 bytes**读写，不做「解析 → 重新序列化」。BOM、CRLF、非 UTF-8、未知 Obsidian 语法逐字节保留。 |
+| **不静默覆盖** | 更新/删除/移动必须携带客户端读到的 `expected_sha256`；文件被别的程序改过就是 `409 file_conflict`，绝不会覆盖你的改动。 |
+| **本地优先** | 默认只监听 `127.0.0.1`。AI 可以完全本地（oMLX / 兼容 OpenAI 的本地端点），没有任何数据离开机器。 |
+| **不锁死** | 目录即结构。Obsidian、VS Code、文件管理器看到的就是普通文件夹和普通 Markdown。 |
+
+## 核心特性
+
+### 📝 编辑与阅读
+
+- **三种视图**：源码编辑（CodeMirror 6）、**实时预览**（同一个编辑器内渲染标题/
+  粗斜体/行内代码/链接/wikilink/图片 widget/列表/引用，**光标所在行保留原始语法**
+  以便就地编辑）、安全只读预览。
+- **分屏**编辑 + 预览，支持**同步滚动**（按相对位置双向联动，不抖动，可关闭）。
+- **多标签页**、树形文件导航、800ms 防抖自动保存与冲突处理（重新加载 / 保留本地）。
+- **可点击任务清单**：`- [ ]` / `- [x]` 在预览与实时模式渲染为复选框，点一下改写源码。
+- **标题快捷键**：`⌘/Ctrl+1…6` 设为对应级别，`⌘/Ctrl+0` 取消，同级再按切回正文。
+- **字体与字号**：四套本地字体栈（无衬线/衬线/等宽/圆体，含中文回退，不联网加载）、
+  作用范围（整个界面 / 仅正文）、**80%–160% 整体缩放**（预设 + 滑块 + `⌘/Ctrl±0`
+  + `Ctrl+滚轮`），缩放作用于侧栏到编辑器全部元素。
+
+### 🗂 知识组织
+
+- **frontmatter / Properties** 只读解析：未知字段逐字保留、tags 规范化、失败给出结构化诊断。
+- **wikilink / embed**：heading / block / alias 全支持，outgoing 链接与 **backlinks**
+  都可点击跳转，区分 `resolved` / `broken` / `ambiguous`。
+- **失效 wikilink 一键建笔记**：先按全库 basename 解析，未命中则落在源笔记目录，
+  `[[子目录/名]]` 自动逐级建目录。
+- **搜索**：FTS5 MATCH 主路径（bm25 排序）+ 中文/Emoji/FTS 不可用时的关键词子串降级，
+  中文任意长度可查。
+- **知识图谱**：`/graph`、`/graph/local/{note}`、`/graph/tag/{tag}` 只读查询 +
+  Graphology/Sigma 可视化（WebGL 缺失时自动降级）。
+- **嵌套文档**：任意界面右键「新建子文档」，`Notes/A.md` 的子文档落进同级的
+  `Notes/A/`——**纯文件夹约定**，不写标记、不复制存储；文件树按文档分级渲染，
+  折叠一层会连同其内部子文档一起收起。
+- **回收站**：文件与文件夹整体软删除，默认保留 **30 天**；列出原路径、删除时间与
+  「剩余 N 天」，可单项恢复、彻底删除或清空。
+
+### 🤖 AI（本地优先）
+
+- **六个只读 workflow**：`chat` / `summarize` / `tags` / `related` / `extract_todos` /
+  `classify`。版本化 Prompt Registry、强 schema 校验（`extra="forbid"`）、
+  候选经程序化收窄 + allow-list；**只给建议，不改正文**。
+- **多供应商档案**：像桌面 AI 客户端一样保存多组端点（oMLX / OpenAI / DeepSeek /
+  Moonshot / 自定义），一键切换，密钥只写入不回显。
+- **本地优先 RAG（V1.1）**：Markdown 感知分块 → 独立 embedding provider →
+  SQLite 向量索引 → **FTS5 + 向量混合检索（RRF 融合）** → 可选重排 →
+  EvidencePack 证据包 → 复用已有 AI Provider 生成 → **引用校验**（伪造引用被删除
+  并记录）。返回可点击的真实来源；没有足够证据时如实回答「没有找到足够证据」。
+- **受控 Agent**：写入默认只生成 **Level 1 preview**，必须显式 `accept` 才落盘；
+  纯程序 PolicyEngine + Journal/Undo + 事务逆序回滚。
+
+### 🔐 数据安全与可靠性
+
+- **路径安全**：词法校验 → resolve containment → 逐级 `lstat`；拒绝 `..`、绝对路径、
+  NUL、反斜杠、盘符/UNC 与**一切 symlink**（逃逸文件/目录/父链均拒绝）。
+- **原子写**：同目录临时文件 + `fsync` + 原子替换。
+- **冲突检测**：update / delete / move 一律要求 `expected_sha256`。
+- **附件直传（M9）**：JSON ≤10 MiB 与 multipart 流式两条通道，四个入口
+  （工具栏 / 拖拽 / 粘贴 / 目录右键），同名自动 `-2`/`-3` 去重，禁止覆盖。
+- **调度与恢复**：APScheduler（asyncio 降级）驱动三个稳定任务，run 全量审计、
+  超时/幂等/清理、启动扫描标记 `recovery_required`、显式 hash-guard 恢复。
+- **错误契约**：统一 `{"error":{"code","message","path"}}`，不泄漏绝对路径、
+  堆栈或正文内容。
+
+## 界面
+
+```text
+┌──────────────────────────────────────────────────────────────────────┐
+│  侧栏 (Ribbon)   │  📑 标签栏                                        │
+│  ─────────────   ├──────────────────────────────────────────────────┤
+│  📄 文件树        │  编辑区 / 实时预览 / 只读预览 / 分屏（同步滚动）  │
+│  (嵌套文档分级)   │  文档工具栏：上层面包屑 · 视图切换 · 附件 · 缩放  │
+│  🔍 搜索          ├──────────────────────────────────────────────────┤
+│  🕸 图谱          │  右侧面板：AI · 知识库检索(RAG) · 关系 · 回收站   │
+│  🗑 回收站        │                                                  │
+│  ⚙️ 设置          ├──────────────────────────────────────────────────┤
+│                  │  状态栏：保存状态 · 供应商 · 字号 − 100% +        │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+## 架构
 
 ```mermaid
 flowchart LR
-    F[Frontend M2/M3 UI] -->|REST /api/v1 JSON| A[FastAPI]
-    A --> H[GET /health = ok]
-    A --> S[AIStatusService 只读]
-    A -->|DI + schema| V[VaultService 唯一 FS 门面]
-    V -->|validated root-relative path| FS[(本地 Vault)]
-    A -->|读派生库| IX[DerivedIndexService v2 SQLite-backed]
-    IX -->|read_bytes/list_tree| V
-    V -->|debounced events| W[Watcher adapter]
-    W -->|index.handle_event 增量| IX
-    IX --> SQL[(.localnote/index.db SQLite + FTS5)]
-    IX -.可重建.-> RB[POST /index/rebuild 事务内清空+重扫]
-    SE[SearchService] -->|FTS5 MATCH 主路径| SQL
-    SE -.中文短查询/FTS不可用降级.-> SUB[关键词子串路径 M3]
-    GV[GraphService M5] -->|graph_snapshot 一致只读| SQL
-    GV -->|DTO| GF[GraphResponse /api/v1/graph*]
-    WUI[Web GraphPanel] -->|Sigma/WebGL or fallback| GF
+    subgraph Browser["浏览器 · React + Vite"]
+        UI["Workspace UI<br/>文件树 · 编辑器 · 预览 · 面板"]
+    end
+
+    subgraph API["FastAPI · /api/v1"]
+        V["VaultService<br/>唯一文件系统门面"]
+        IX["DerivedIndexService<br/>SQLite 派生索引"]
+        AI["AI · Agent · RAG"]
+        SCH["Scheduler · History · Recovery"]
+    end
+
+    FS[("Markdown Vault<br/>唯一事实源")]
+    DB[(".localnote/index.db<br/>FTS5 · 向量 · 图 · 审计")]
+    LLM["本地模型 / OpenAI 兼容端点"]
+
+    UI -->|REST JSON| API
+    V --> FS
+    IX --> DB
+    V -.->|去抖事件流| IX
+    AI --> IX
+    AI --> LLM
+    SCH --> V
+    SCH --> IX
+
+    DB -.->|"可删除重建"| FS
 ```
+
+关键点：**只有 `VaultService` 能碰文件系统**，其余模块都经由它做受校验的读写；
+派生库 `.localnote/index.db` 里的任何东西都能从 Markdown 文件重建。
+
+## 技术栈
+
+| 层 | 技术 |
+|---|---|
+| 后端 | Python 3.12 · FastAPI · Uvicorn · Pydantic v2 / pydantic-settings |
+| 派生数据 | SQLite（WAL）· FTS5 · 纯 Python / 可选 numpy 向量扫描 · APScheduler |
+| 文件监听 | watchdog（去抖 + 增量索引，缺失时读写照常） |
+| 前端 | React 18 · TypeScript · Vite 5 · Zustand |
+| 编辑器 | CodeMirror 6（自研实时预览装饰层） |
+| 预览渲染 | remark / rehype + `rehype-raw` → `rehype-sanitize` 严格清洗 |
+| 图谱 | Graphology 0.26 · Sigma 3 · ForceAtlas2（WebGL 降级） |
+| 测试 | pytest（后端 / RAG）· Vitest + Testing Library（前端） |
+| 工程 | pnpm workspace · uv（Python 依赖）· ruff |
 
 ## 快速开始
 
-前置要求：Python **3.12+**、Node **>=22 <23**、`pnpm` 9.x（`corepack enable`，
-项目 `packageManager: pnpm@9.15.0`）、推荐 `uv`。
+### 前置要求
+
+- **Python ≥ 3.12**
+- **Node ≥ 22 且 < 23**（`.nvmrc` 已固定）
+- **pnpm 9.x**（`corepack enable`；项目 `packageManager: pnpm@9.15.0`）
+- 推荐安装 [`uv`](https://docs.astral.sh/uv/)（不是必需）
+
+### 一键启动
 
 ```bash
-./scripts/dev.sh            # 一键启动（后端 :3780 + 前端 :5173，Ctrl-C 清理）
+git clone https://github.com/ningyd98/LocalBook.git
+cd LocalBook
+
+# 指向一个已存在的 Markdown 目录作为 Vault（LocalNote 不会替你创建）
+export LOCALNOTE_VAULT__ROOT="$HOME/Notes"
+
+./scripts/dev.sh     # 后端 :3780 + 前端 :5173，Ctrl-C 清理
 ```
 
-无 uv 的手动路径：`python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`
-（依赖含 watchdog，锁于 `uv.lock`）。
+打开 <http://127.0.0.1:5173> 即可。`dev.sh` 会做依赖/版本/端口检查，转发信号并
+优雅清理；目标端口被占用时会直接报错并给出覆盖变量，**从不杀掉别人的进程**。
 
-### Vault 快速开始（M1）
-
-1. 准备或指向一个已存在的目录作为 Vault root（LocalNote **不会替你创建**）：
-   ```bash
-   export LOCALNOTE_VAULT__ROOT="$PWD/tests/fixtures/vault"   # 演示用受控 fixture
-   python -m uvicorn server.api.main:app --host 127.0.0.1 --port 3780
-   ```
-2. 列表 / 读取 / 创建 / 原子更新：
-   ```bash
-   curl -fsS 'http://127.0.0.1:3780/api/v1/vault/files?recursive=true'
-   curl -fsS --get 'http://127.0.0.1:3780/api/v1/vault/file' \
-     --data-urlencode 'path=中文/😀 note.md'
-   curl -fsS -X POST 'http://127.0.0.1:3780/api/v1/vault/file' \
-     -H 'content-type: application/json' \
-     -d '{"path":"notes/new.md","content_base64":"IyBIZWxsbwo="}'
-   # 用上一步读到的 sha256 做原子更新：
-   curl -fsS -X PATCH 'http://127.0.0.1:3780/api/v1/vault/file' \
-     -H 'content-type: application/json' \
-     -d '{"path":"notes/new.md","content_base64":"IyBVcGRhdGVkCg==","expected_sha256":"sha256:<hash>"}'
-   ```
-3. 错误示例：`GET ...?path=../outside.md` → HTTP 400 `path_traversal`；
-   root 未配置 → HTTP 503 `vault_not_configured`；hash 过期 → 409
-   `file_conflict`。
-
-## 测试与构建
+### 手动启动
 
 ```bash
-uv sync --dev                       # 或 .venv/bin/pip install -e '.[dev]'
-python -m pytest -q                 # 后端（health/AI 回归 + M1 Vault 矩阵）
-pnpm install --frozen-lockfile      # 前端（无改动时仅回归）
-pnpm --filter @localnote/protocol typecheck
-pnpm --filter @localnote/graph typecheck
-pnpm --filter @localnote/web typecheck
-pnpm --filter @localnote/web test   # Vitest run
-pnpm --filter @localnote/web build  # Vite 生产构建
-python -m compileall server
-./scripts/check.sh                  # 一键本地门禁
+# 后端
+uv sync --dev                                   # 或 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
+LOCALNOTE_VAULT__ROOT="$HOME/Notes" \
+  .venv/bin/python -m uvicorn server.api.main:app --host 127.0.0.1 --port 3780
+
+# 前端（另开一个终端）
+pnpm install --frozen-lockfile
+pnpm --filter @localnote/web dev
 ```
 
-测试安全规则：
+### 接入 AI（可选）
 
-- Vault 测试只使用 `tests/fixtures/vault/` 的受控副本（复制进 pytest
-  `tmp_path`）或临时目录内自建 fixture；**绝不触碰真实用户 Vault**；
-- symlink 逃逸矩阵在 tmp 目录中构造；AI 探测全部 mock；
-- 更新必须携带读取到的 hash 做冲突检测，服务器永不静默覆盖；
-- `tests/backend/conftest.py` 的 autouse 隔离 fixture 会清空 `LOCALNOTE_*`
-  环境并屏蔽真实实例配置——**手写临时脚本调 Vault API 时必须显式设置
-  `LOCALNOTE_SETTINGS_FILE`（指向隔离文件）**，否则可能命中真实笔记库。
+LocalNote 默认不连任何模型，AI 功能显示「未配置」是正常状态。要启用：
 
-## 端口与环境变量
+1. 在**设置 → AI 配置**里新增档案（内置 oMLX / OpenAI / DeepSeek / Moonshot /
+   自定义模板），填入 `base_url`、模型名与 API Key（只写入，界面只回显「已设置」）；
+2. 点「测试」探活，再「启用」；
+3. 「知识库检索」面板里可配置 RAG 的 embedding 与重排端点。
+
+任何供应商不可用时，AI 相关端点返回稳定错误码（503 / `capability_unavailable`），
+**不会影响编辑、搜索、图谱等核心功能**。
+
+## 配置
+
+全部配置通过环境变量（嵌套变量优先于扁平别名），也可以直接在界面「设置」里改
+并持久化到实例配置（0600）。最常用的几个：
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `LOCALNOTE_HOST` / `LOCALNOTE_SERVER__HOST` | `127.0.0.1` | 后端监听地址（默认仅回环） |
-| `LOCALNOTE_PORT` / `LOCALNOTE_SERVER__PORT` | `3780` | 后端端口 |
-| `LOCALNOTE_SERVER__CORS_ORIGINS` | `["http://127.0.0.1:5173","http://localhost:5173"]` | JSON 数组显式白名单 |
-| `LOCALNOTE_SERVER__SETTINGS_TRUSTED_HOSTS` | `[]` | 额外允许访问 `/api/v1/settings` 的 Host（JSON 数组，如 `["note.ningyd.com"]`）。仅在经反向代理（保留公网 Host）访问时才需要；回环对端校验仍然生效 |
-| `LOCALNOTE_VAULT__ROOT` / `LOCALNOTE_VAULT_ROOT` | 空 | Vault 根目录（必须已存在）。未配置 ⇒ `Not configured`，Vault API 503 |
-| `LOCALNOTE_VAULT__WATCHER_ENABLED` / `..._VAULT_WATCHER_ENABLED` | `true` | 是否启动 watcher（`false` ⇒ `disabled`） |
-| `LOCALNOTE_VAULT__WATCHER_DEBOUNCE_MS` | `200` | watcher 事件去抖窗口（ms） |
-| `LOCALNOTE_VAULT__MAX_FILE_BYTES` | `52428800` | 单文件读写上限（超出 ⇒ 413 `file_too_large`） |
-| `LOCALNOTE_AI__BASE_URL` / `LOCALNOTE_OMLX_BASE_URL` | `http://127.0.0.1:8000/v1` | oMLX OpenAI 兼容地址；置空 ⇒ `not_configured` |
-| `LOCALNOTE_AI__API_KEY` | 空 | 需要认证的 OpenAI 兼容服务使用；以 `Authorization: Bearer <key>` 发送。仅写入（接口只回显 `api_key_set`），保存在实例配置文件（0600） |
-| `LOCALNOTE_AI__CONNECT_TIMEOUT_SECONDS` | `0.5` | AI 探测连接超时 |
-| `LOCALNOTE_AI__REQUEST_TIMEOUT_SECONDS` | `60` | AI 生成超时。本地模型一次推理常需数秒到数十秒；早期默认 `2.0` 会让 `/ai/status` 显示 connected 而每次生成都返回 `ai_timeout`，故放宽到 60（上限 120） |
-| `LOCALNOTE_SCHEDULER__ENABLED` | `true` | Scheduler 总开关（默认开启、可停止；关闭后 status 可见、run 返回 409 `scheduler_disabled`） |
-| `LOCALNOTE_SCHEDULER__TIMEZONE` | `UTC` | 任务时区（IANA 名称，如 `Asia/Shanghai`；非法即配置错误） |
-| `LOCALNOTE_SCHEDULER__DAILY_CRON` / `WEEKLY_CRON` | `0 23 * * *` / `0 20 * * 0` | Daily/Weekly cron（严格 5 字段 int/`*`/`*/step`） |
-| `LOCALNOTE_SCHEDULER__INDEX_CHECK_ENABLED` | `false` | 可选只读 index consistency 周期任务（interval） |
-| `LOCALNOTE_SCHEDULER__INDEX_CHECK_INTERVAL_HOURS` | `24` | index 校验间隔（小时） |
-| `LOCALNOTE_SCHEDULER__LEVEL2_AUTO_ENABLED` / `LEVEL2_AUTO_ACTIONS` | `false` / `[]` | Level 2 tag-only 自动执行开关/白名单（只能 `add_tags`/`remove_tags`；开启必须有非空白名单） |
-| `LOCALNOTE_SCHEDULER__JOB_TIMEOUT_SECONDS` | `300` | 单次 run 超时（超时标记 `timed_out`/`recovery_required`，不杀写线程） |
-| `LOCALNOTE_SCHEDULER__STALE_RUN_AFTER_SECONDS` | `3600` | 孤儿 running run 阈值 |
-| `LOCALNOTE_HISTORY__RETENTION_DAYS` | `30` | History/run retention（只删终态过期派生行） |
-| `LOCALNOTE_HISTORY__CLEANUP_ENABLED` / `CLEANUP_INTERVAL_HOURS` | `true` / `24` | retention 清理开关/间隔 |
-| `LOCALNOTE_HISTORY__MAX_SCHEDULER_RUNS` | `1000` | scheduler_runs 保留上限 |
-| `LOCALNOTE_INDEX__AUTO_REBUILD` | `false` | index consistency 发现不一致时允许 rebuild（只写派生库） |
-| `LOCALNOTE_INDEX__NOTE_TEXT_CAP` | `1000000` | 索引单篇正文保留上限（字符） |
-| `LOCALNOTE_INDEX__DB_FILENAME` | `index.db` | `.localnote/` 内派生库文件名（M4） |
-| `LOCALNOTE_INDEX__FTS_TOKENIZER` | `unicode61` | FTS5 tokenizer（M4；中文短查询走子串降级） |
-| `LOCALNOTE_INDEX__JOURNAL_MODE` | `WAL` | SQLite journal_mode（M4） |
-| `LOCALNOTE_INDEX__SYNCHRONOUS` | `NORMAL` | SQLite synchronous（M4） |
-| `LOCALNOTE_INDEX__BUSY_TIMEOUT_MS` | `5000` | SQLite busy_timeout（M4） |
-| `LOCALNOTE_GRAPH__DEFAULT_LIMIT` / `MAX_LIMIT` | `500` / `2000` | Graph 节点页默认/上限（M5） |
-| `LOCALNOTE_GRAPH__DEFAULT_DEPTH` / `MAX_DEPTH` | `1` / `3` | local BFS 默认/最大深度（M5） |
-| `LOCALNOTE_GRAPH__DEFAULT_INCLUDE_BROKEN` | `true` | 是否默认输出 dangling broken/ambiguous 边（M5） |
-| `LOCALNOTE_GRAPH__MAX_EDGES` | `2000` | 单响应边上限（超出置 `truncated`，M5） |
-| `VITE_PORT` / `VITE_API_PROXY_TARGET` | `5173` / `http://127.0.0.1:3780` | Vite 端口 / `/api` proxy 目标 |
+| `LOCALNOTE_VAULT__ROOT` | 空 | **必填**。Vault 根目录，必须已存在 |
+| `LOCALNOTE_HOST` / `LOCALNOTE_PORT` | `127.0.0.1` / `3780` | 后端监听地址与端口 |
+| `LOCALNOTE_AI__BASE_URL` | `http://127.0.0.1:8000/v1` | OpenAI 兼容端点 |
+| `LOCALNOTE_SERVER__SETTINGS_TRUSTED_HOSTS` | `[]` | 经反向代理访问 `/api/v1/settings` 时需要的额外 Host 白名单 |
+| `LOCALNOTE_VAULT__TRASH_RETENTION_DAYS` | `30` | 回收站保留天数 |
+| `VITE_API_PROXY_TARGET` | `http://127.0.0.1:3780` | 前端 `/api` 代理目标 |
 
-规则：嵌套变量优先于扁平别名（如 `LOCALNOTE_VAULT__ROOT` 与
-`LOCALNOTE_VAULT_ROOT` 同时设置时取嵌套值）。
+完整环境变量表、所有端点与稳定错误码见 **[`docs/api-reference.md`](./docs/api-reference.md)**。
 
-## Vault API 一览（M1）
-
-| 方法/路径 | 说明 | 主要错误 |
-|---|---|---|
-| `GET /api/v1/vault/files?path=&recursive=&include_hidden=` | 列表（`.localnote` 永远过滤） | 400/404/503 |
-| `GET /api/v1/vault/file?path=` | 读取（base64 + sha256 + content_type） | 400/404/413/503 |
-| `POST /api/v1/vault/file` | 创建（父目录须存在） | 400/404/409/413/503 |
-| `PATCH /api/v1/vault/file` | 原子更新（必须 `expected_sha256`） | 400/404/409/413/503 |
-| `DELETE /api/v1/vault/file` | 删除（必须 `expected_sha256`） | 400/404/409/503 |
-| `POST /api/v1/vault/file/move` | 移动/重命名（不覆盖目标） | 400/404/409/500/503 |
-
-### 附件上传（PLAN-ATTACHMENTS v1.1）
-
-| 方法/路径 | 说明 | 主要错误 |
-|---|---|---|
-| `POST /api/v1/vault/attachments` | 用户直传附件（JSON `content_base64`，≤10 MiB），201 | 400/404/409/413/422/503 |
-| `POST /api/v1/vault/attachments/multipart` | 用户直传附件（multipart 流式，>10 MiB），201 | 400/404/409/413/422/503 |
-| `GET /api/v1/vault/resource?path=` | 只读原始 bytes（图片预览/附件下载） | 400/404/413/503 |
-
-四个入口与落点（`target_directory` 由前端按入口决定，空串 = Vault 根）：
-
-- 文件树目录右键“上传到该目录” → **被右键的那个目录**；
-- 工具栏“插入附件”、编辑器/预览区拖拽、剪贴板粘贴图片 → 当前笔记所在目录
-  （根笔记为空串）。
-
-要点：目标目录**必须已存在**（不自动建 `attachments/YYYY-MM/` 或任何中间
-目录，`attachments/` 不是唯一落点）；禁止覆盖（同名 `-2`/`-3` 递增 + 原子
-no-overwrite 兜底，竞争最终 409 `already_exists`）；隐藏段、`.localnote`、
-symlink、越界路径一律拒绝；正文引用是相对当前笔记的 POSIX 路径（必要时
-`../`）；预览经 `/api/v1/vault/resource?path=...` 读取并由 sanitize 管线
-保护；上传是用户直传旁路，不经过 Policy，`attachment_write` 对 Agent 仍
-永久拒绝。详见 `docs/vault-spec.md` §8.1。
-
-## Metadata / Links / Search / Index API 一览（M3 契约 + M4 SQLite 底层，只读 + 一个重建）
-
-| 方法/路径 | 说明 | 主要错误 |
-|---|---|---|
-| `GET /api/v1/metadata/{note}`（或 `?path=`） | frontmatter 解析（Vault 实时读；未知字段保留、tags 规范化）；解析失败为 HTTP 200 + 结构化 `parse_error` | 404/503 |
-| `GET /api/v1/links/{note}`（或 `?path=`） | outgoing 链接（从 SQLite `links` 读；resolved/broken/ambiguous + broken_count） | 404/503 |
-| `GET /api/v1/backlinks/{note}`（或 `?path=`） | 反链（从 SQLite `backlinks` 读；来源标题 + 上下文片段） | 404/503 |
-| `GET /api/v1/search?q=` | 搜索：FTS5 MATCH 主路径 + 中文/Emoji/FTS 不可用时的子串降级（AND、snippet 纯文本、degraded 计数；DTO 不变） | 400/503 |
-| `POST /api/v1/index/rebuild` | 全量重建 SQLite 派生索引（事务内清空+重扫），返回 `{indexed,skipped,failed,duration_ms,...}` | 503 |
-
-`{note}` 使用 FastAPI `:path` 转换器；前端按路径段做 `encodeURIComponent`，
-中文/Emoji/空格/嵌套路径均可。索引故障仅使上述端点与 Graph 503，不影响
-health/Vault 读写/编辑器。
-
-## Graph API 一览（M5，只读）
-
-| 方法/路径 | 说明 | 主要错误 |
-|---|---|---|
-| `GET /api/v1/graph?limit=&offset=&tag=&include_broken=` | 全局 Note/Tag 图（可选 tag 过滤，casefold） | 400/503 |
-| `GET /api/v1/graph/local/{note}?depth=&direction=&tag=&include_broken=` | root BFS 局部图（depth≤3；incoming 由 links 反推） | 400/404/503 |
-| `GET /api/v1/graph/tag/{tag}`（或 `?tag=`） | tag 作用域图（与全局 tag 过滤同语义） | 400/404/503 |
-
-响应：`{model:"note-tag-v1",scope,root,nodes,edges,page:{limit,offset,next_offset,
-total_nodes,total_edges,truncated},generated_at}`。nodes 按 `(type,id)`、edges 按
-`(type,source,target,id)` 确定性排序；截断页只含端点在本页的边；broken 边
-`target=""`。图只读：不产生任何 SQLite 写入、不写正文。
-
-错误体：`{"error":{"code":"…","message":"…","path":"…|null"}}`。
-本节仅列 Vault/索引域的代表性错误；AI、Job、Policy、History、Recovery、
-Scheduler 各自的稳定错误码见对应模块 README 与架构文档。常见错误包括：
-`vault_not_configured`、`vault_unavailable`、`path_traversal`、
-`symlink_escape`、`file_conflict`、`expected_hash_required`、
-`file_too_large`、`watcher_unavailable`、`index_unavailable`、`internal_error`。
-
-## AI 状态与只读 workflow（Phase 0 + M6）
-
-`GET /api/v1/ai/status` 三态均 HTTP 200：`not_configured` / `offline` /
-`connected`（发现 Qwen3.5-4B 时返回 ID）。安全默认：端点回显剥离凭据与
-query；错误不含堆栈/响应体。
-
-M6 提供六个只读 POST workflow（均需严格 DTO，绝不写 Vault）：
-
-| 方法/路径 | 用途 | 关键语义 |
-|---|---|---|
-| `POST /api/v1/ai/chat` | 受限上下文问答 | Vault 未配置时允许空上下文 |
-| `POST /api/v1/ai/summarize` | 总结笔记 | 输出严格结构化并回显 prompt 元数据 |
-| `POST /api/v1/ai/tags` | 建议标签 | 只返回建议，不写 frontmatter |
-| `POST /api/v1/ai/related` | 推荐相关笔记 | 先由 FTS/子串、links/graph 缩小 allow-list |
-| `POST /api/v1/ai/extract_todos` | 提取待办 | 输出严格结构化建议 |
-| `POST /api/v1/ai/classify` | 分类笔记 | 输出严格结构化建议 |
-
-workflow 的模型未配置/离线返回 503，非法模型输出返回 502，能力缺失返回
-`capability_unavailable`；结构化错误携带 `meta: {prompt_version, model}`。
-详见 [`docs/ai-architecture.md`](./docs/ai-architecture.md) 与 [`PLAN-M6.md`](./PLAN-M6.md)。
-
-## 目录概览
-
-```text
-apps/web/             React + TS + Vite（Phase 0 状态页 + M2 Workspace + M3 Search/Links 面板 + M5 GraphPanel + M6 AIPanel）
-packages/protocol/    共享 API DTO 类型（types only，含 M3/M5 DTO 镜像）
-packages/ui/          M2 UI 基元（Button/Panel/TreeRow/Tab/…）
-packages/editor/      M2 CodeMirror 6 Markdown 编辑器 + M12 实时预览装饰层
-                      （livePreviewExt.ts）
-packages/markdown/    M2 安全只读预览（remark/unified + rehype-raw → rehype-sanitize）
-packages/workspace/   Zustand 会话 store（树/标签/防抖保存/冲突 + M3 relations/search + M5 graph slice + M6 AI slice）
-packages/graph/       M5 Graphology/Sigma 可视化 + WebGL 降级（graphology 0.26.0 / sigma 3.0.3 / 布局 0.6.1/0.10.1）
-server/
-  api/                路由、DI、lifespan、安全错误映射（vault + metadata/links/search/index/graph）
-  vault/              M1 Vault Core：service/path_safety/errors/schemas/
-                      atomic_write/derived/events/watcher/lifecycle
-  markdown/bytes.py   M1 原始 bytes/hash 边界（无 parser）
-  markdown/{frontmatter,wikilinks}.py   M3 最小只读扫描器
-  index/              M4 SQLite 派生索引（schema/db/service + DTO）+ M5 只读 graph_snapshot 等查询面
-  graph/              M5 只读 Graph 服务 + DTO（查询时计算，无写路径）
-  metadata|links|search/  M3 领域服务 + DTO（M4 底层读 SQLite；metadata 实时读 Vault）
-  ai/                 Phase 0 探测 + M6 只读 workflow（适配器/上下文/注册表/候选缩小）
-  agents/             M7 受控 Agent：registry/workflows/tools/schemas/service
-  policies/           M7 纯程序 PolicyEngine + 稳定 M7 错误
-  history/            M7 History/Journal + M8 scheduler_runs 与 retention（index.db 派生表）
-  recovery/           M7 事务执行/逆序回滚/Undo + M8 启动扫描与显式 hash-guard 恢复
-  scheduler/          M8 本地调度器（APScheduler 首选/asyncio 降级；runner/status/run）
-tests/                backend/（M1/M2 回归 + M3 矩阵 + M4 矩阵 + M5 test_graph_* +
-                      M6 test_ai_* + M7 test_m7_* + M8 test_m8_{config,scheduler_backend,runner,
-                      m7_integration,recovery,retention,index_consistency,api,isolation}；perf/ 可选）
-                      frontend/（Vitest：M2 保存/冲突 + M3 Search/NotesLinks/Ribbon/client +
-                      M5 GraphData/GraphStore/GraphView/GraphPanel + M6 AIPanel/AIIsolation +
-                      M9 附件四入口/预览解析 + M10 RenameEntry + M11 WikilinkCreate +
-                      M12 EditorKeymapMatrix/AppApiRegistration）fixtures/…
-scripts/dev.sh        一键开发启动
-scripts/check.sh      本地验证门禁
-docs/                 vault-spec（M1 状态）/ architecture / ai / roadmap
-```
-
-## 本机常驻服务（launchd）
-
-本仓库在 macOS 上由 launchd 常驻（`~/Library/LaunchAgents/com.ningyd.localbook-{backend,web}.plist`）：
-
-- backend：`127.0.0.1:3780`，环境里带 `LOCALNOTE_VAULT_ROOT` 与
-  `LOCALNOTE_SERVER__SETTINGS_TRUSTED_HOSTS=["note.ningyd.com"]`；
-- web：`127.0.0.1:5173`，`VITE_API_PROXY_TARGET=http://127.0.0.1:3780`；
-- 两者 `KeepAlive=true`：进程退出会被立刻拉起。
-
-**重启请用 `launchctl kickstart -k gui/$(id -u)/com.ningyd.localbook-backend`，不要手工 `kill` 后再手动跑
-`uvicorn`** —— 手工实例不带 plist 里的环境变量，公网域名（nginx → frp → 5173 → 3780）
-访问 `/api/v1/settings` 会被 `settings_local_only` 拒绝，页面显示
-「无法读取服务配置」。同理，手工起的实例会占用 3780/5173，使 launchd 的
-服务反复启动失败（`launchctl list` 中该 job 的状态码非 0）。
-
-## 局域网暴露警告
-
-默认全部绑定 `127.0.0.1`（回环）。局域网访问必须**显式**设置
-`LOCALNOTE_HOST` 为非回环地址，如 `0.0.0.0`（前端 `VITE_HOST=0.0.0.0`）。
-**LocalNote 不实现账号/认证或 HTTPS**：一旦监听非回环地址（`0.0.0.0`、
-`::`、`192.168.x`、具体主机名等任意一种），同一网络中的任何设备都可以
-调用写 API。M8 的处理是**仅告警、不阻断启动**（与 PLAN-M8 §6.2 的
-`network_exposure_warning` 状态告警语义一致）：host 非回环时启动日志与
-`GET /scheduler/status` 均置 `network_exposure_warning=true`；当 CORS
-白名单为空、含 `*` 或只含回环来源（如默认的 `127.0.0.1:5173`/
-`localhost:5173`，无法服务局域网浏览器）时，status 增加固定字段
-`network_exposure_advice`，内容是建议显式设置
-`LOCALNOTE_SERVER__CORS_ORIGINS`，例如：
+## 测试与门禁
 
 ```bash
-LOCALNOTE_HOST=0.0.0.0 \
-LOCALNOTE_SERVER__CORS_ORIGINS='["http://<信任的局域网前端>:5173"]' \
+./scripts/check.sh          # 一键本地门禁：后端 pytest + typecheck + Vitest + 生产构建
+```
+
+或分开跑：
+
+```bash
+uv sync --dev
+.venv/bin/python -m pytest -q          # 后端（tests/backend）
+.venv/bin/python -m pytest tests/rag -q # 本地 RAG
+./scripts/rag-eval.sh                   # RAG 全量 + Golden Dataset 评估（带门槛校验）
+
+pnpm typecheck                          # 全部 workspace 包
+pnpm --filter @localnote/web test       # 前端 Vitest
+pnpm --filter @localnote/web build      # 生产构建
+```
+
+V1.1.0 当前基线（2026-09-12）：
+
+| 门禁 | 结果 |
+|---|---|
+| 后端 `tests/backend` | **928 passed, 3 skipped** |
+| 本地 RAG `tests/rag` | **272 passed, 2 skipped** |
+| 前端 Vitest | **362 passed, 3 skipped**（43 个文件） |
+| TypeScript typecheck | 全部 workspace 包通过 |
+| Vite 生产构建 | 通过 |
+
+**测试安全规则**：测试只使用 `tests/fixtures/vault/` 的受控副本与 `tmp_path`，
+**绝不触碰真实 Vault**；`tests/backend/conftest.py` 的 autouse fixture 会清空
+`LOCALNOTE_*` 环境并屏蔽真实实例配置——**手写临时脚本调 Vault API 时必须显式设置
+`LOCALNOTE_SETTINGS_FILE`（指向隔离文件）**，否则可能命中真实笔记库。
+
+## 常驻运行与部署
+
+LocalNote 本身**不实现账号、认证或 HTTPS**，它的安全模型是「默认只监听回环」。
+要长期常驻或在局域网/公网使用，请按下面两种方式之一处理。
+
+### macOS：launchd 常驻
+
+```xml
+<!-- ~/Library/LaunchAgents/com.example.localnote-backend.plist -->
+<key>ProgramArguments</key>
+<array>
+  <string>/path/to/LocalBook/.venv/bin/python</string>
+  <string>-m</string><string>uvicorn</string>
+  <string>server.api.main:app</string>
+  <string>--host</string><string>127.0.0.1</string>
+  <string>--port</string><string>3780</string>
+</array>
+<key>EnvironmentVariables</key>
+<dict>
+  <key>LOCALNOTE_VAULT_ROOT</key>
+  <string>/Users/you/Notes</string>
+  <key>LOCALNOTE_SERVER__SETTINGS_TRUSTED_HOSTS</key>
+  <string>["note.example.com"]</string>
+</dict>
+<key>KeepAlive</key><true/>
+```
+
+> ⚠️ **重启请用 `launchctl kickstart -k gui/$(id -u)/com.example.localnote-backend`。**
+> 不要手工 `kill` 后再手动跑 `uvicorn`：手工实例不带 plist 里的环境变量，
+> 经反向代理访问 `/api/v1/settings` 会被 `settings_local_only` 拒绝（界面显示
+> 「无法读取服务配置」）；而且手工实例会占住 3780/5173，让 launchd 的服务反复
+> 启动失败（`launchctl print` 里 `last exit code` 非 0、`runs` 持续增长）。
+
+### 局域网 / 公网暴露
+
+一旦监听非回环地址（`0.0.0.0`、`::`、`192.168.x`、具体主机名等任意一种），
+**同一网络中的任何设备都能调用写 API**。正确做法是后端仍绑回环，前面放
+Caddy / nginx 做 TLS 与 Basic Auth：
+
+```bash
+LOCALNOTE_HOST=127.0.0.1 \
+LOCALNOTE_SERVER__SETTINGS_TRUSTED_HOSTS='["note.example.com"]' \
+LOCALNOTE_SERVER__CORS_ORIGINS='["https://note.example.com"]' \
 ./scripts/dev.sh
 ```
 
-不要把该端口暴露到公网，请用防火墙限制来源；CORS 不允许凭据通配。默认
-回环，暴露风险自负。
+加固后端的处理是**仅告警、不阻断启动**：host 非回环时启动日志与
+`GET /api/v1/scheduler/status` 都会置 `network_exposure_warning=true`；当 CORS
+白名单为空、含 `*` 或只含回环来源时，status 还会追加 `network_exposure_advice`
+提示你显式配置来源。**不要把该端口直接暴露到公网**——请用防火墙限制来源，
+并自行承担暴露风险。
 
-## 路线图
+## 项目结构
 
-M0 Bootstrap（完成）→ **M1 Vault 安全读写（完成）** → M2
-Workspace/Editor/Preview（完成）→ **M3 Metadata/Links/搜索（实现完成，待独立审计）** →
-**M4 SQLite FTS/索引（实现完成，待独立审计）** → **M5 Graph 派生与可视化（已完成）** →
-**M6 只读 AI（已实现，审计修复轮完成）** → **M7 Policy/Diff/History/Recovery/
-受控 Agent（已实现）** → **M8 Scheduler/可靠性/部署（实现完成，待独立审计；本地
-产品 MVP 闭环）** → **M9 用户直传附件（实现完成，独立审计通过）** →
-**M10 文件重命名 / M11 从 wikilink 创建嵌套笔记 / M12 单栏实时预览（已实现）**。详见
-[`docs/development-roadmap.md`](./docs/development-roadmap.md)。
+```text
+apps/web/              React + TS + Vite 前端（工作台、面板、设置）
+packages/protocol/     前后端共享 API DTO 类型（types only）
+packages/ui/           UI 基元组件
+packages/editor/       CodeMirror 6 编辑器 + 实时预览装饰层
+packages/markdown/     安全只读预览渲染管线（remark/rehype + sanitize）
+packages/workspace/    Zustand 会话 store（树/标签/保存/冲突/关系/图/AI）
+packages/graph/        Graphology + Sigma 图谱可视化（WebGL 降级）
+server/
+  api/                 路由、DI、lifespan、安全错误映射
+  vault/               Vault Core：路径安全、原子写、事件、回收站、生命周期
+  markdown/            原始 bytes/hash 边界 + 最小只读扫描器
+  index/               SQLite 派生索引（schema/迁移/FTS5/查询面）
+  graph/ metadata/ links/ search/   领域服务与只读 DTO
+  ai/                  探测、适配器、只读 workflow、候选收窄
+  rag/                 分块、embedding、向量索引、混合检索、重排、EvidencePack
+  agents/ policies/ history/ recovery/ scheduler/   受控写入与可靠性
+tests/
+  backend/             pytest：Vault/AI/Policy/History/Scheduler/回收站…
+  rag/                 RAG 单元 + 端到端 + Golden Dataset 评估
+  frontend/            Vitest + Testing Library
+  fixtures/            受控 Vault 副本
+scripts/dev.sh         一键开发启动
+scripts/check.sh       本地验证门禁
+scripts/rag-eval.sh    RAG 全量 + 评估门槛
+docs/                  架构、Vault 规格、AI、RAG、路线图、API 参考
+```
 
-## 贡献 / 许可
+## 版本与路线图
 
-占位：尚未开放贡献流程与许可选择（`UNLICENSED`）。开发者必须先读
-`PLAN-M1.md`、`PLAN.md` 与 `docs/` 再动手；禁止提前实现 M2+ 功能。
+当前版本 **V1.1.0**。完整变更见 **[`CHANGELOG.md`](./CHANGELOG.md)**。
+
+- **V1.0.0（M0–M13）**：Vault 安全读写与字节保真、Workspace/编辑器/预览、
+  Metadata/Links/搜索、SQLite 派生索引、Graph、只读 AI、受控 Agent/Policy/
+  History/Recovery、Scheduler、附件直传、文件重命名、wikilink 建笔记、
+  单栏实时预览、任务清单。
+- **V1.1.0（M14）**：**本地优先 RAG** 全链路（分块 → embedding → 向量索引 →
+  混合检索 → 证据包 → 生成 → 引用校验）、可选 HTTP 重排、多供应商 AI 档案、
+  文件夹软删除与回收站、嵌套文档与分级收缩、字体/字号体系、分屏同步滚动。
+
+路线图与每个里程碑的验收记录见
+[`docs/development-roadmap.md`](./docs/development-roadmap.md) 与 `PLAN-M*.md`。
+
+> **关于 RAG 的 Link/Graph 第三路（诚实结论）**：链路、配置面与界面已完整落地，
+> 但在现有 Golden Dataset 上**实测中性、零增益**（`hybrid_link` 与纯 `hybrid` 的
+> recall@5/@10/MRR 逐位相同），因此**保持默认关闭**。这是关于该语料的结论，
+> 不是「图扩展普遍无用」的判断。详见
+> [`M14-REPORT.md`](./M14-REPORT.md) §9.5。
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [`docs/api-reference.md`](./docs/api-reference.md) | **端点一览、错误契约、环境变量全表** |
+| [`docs/architecture.md`](./docs/architecture.md) | 整体架构与模块边界 |
+| [`docs/vault-spec.md`](./docs/vault-spec.md) | Vault 读写契约、路径安全、附件与回收站 |
+| [`docs/ai-architecture.md`](./docs/ai-architecture.md) | AI 适配层、workflow、候选与 Prompt 版本 |
+| [`docs/rag-architecture.md`](./docs/rag-architecture.md) | RAG 分块/索引/检索/证据包/引用校验 |
+| [`docs/development-roadmap.md`](./docs/development-roadmap.md) | 里程碑与验收记录 |
+| [`M14-REPORT.md`](./M14-REPORT.md) | RAG 阶段完整实测报告（含调参与性能） |
+| [`PLAN-PROVIDERS.md`](./PLAN-PROVIDERS.md) | 多供应商 AI 档案设计 |
+| [`CHANGELOG.md`](./CHANGELOG.md) | 逐版本变更 |
+
+## 已知限制
+
+- **无账号 / 认证 / HTTPS**：局域网或公网暴露需自行用防火墙与反向代理保护。
+- 目录重命名/移动、附件拖动移动、附件全文索引、批量上传、断点续传。
+- **AI 不写正文**：所有 AI 输出都是建议，落盘必须经过受控 Agent 的显式 accept。
+- Agent 递归 loop、自动修复 broken/ambiguous 链接。
+- 云同步、多进程调度、分布式锁。
+- 实时预览是「源码 + 装饰层」，**不引入 AST 写路径**，因此没有真正的富文本编辑。
+
+## 许可
+
+**UNLICENSED** —— 尚未开放贡献流程与许可选择，保留所有权利。
+
+> 开发者在动手前请先阅读 `PLAN.md`、`docs/architecture.md` 与
+> `docs/development-roadmap.md`。

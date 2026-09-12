@@ -60,7 +60,7 @@ describe("FileTree drag & drop", () => {
   it("moves a file onto a folder", () => {
     const onMove = renderTree();
     const source = screen.getByRole("button", { name: /b\.md/ });
-    const target = screen.getByRole("button", { name: /notes/ });
+    const target = screen.getByRole("button", { name: "notes" });
     const dt = dataTransfer();
     fireEvent.dragStart(source, { dataTransfer: dt });
     fireEvent.dragOver(target, { dataTransfer: dt });
@@ -70,8 +70,8 @@ describe("FileTree drag & drop", () => {
 
   it("refuses to drop a folder into itself or its own child", () => {
     const onMove = renderTree();
-    const folder = screen.getByRole("button", { name: /^notes$/ });
-    const child = screen.getByRole("button", { name: /a\.md/ });
+    const folder = screen.getByRole("button", { name: "notes" });
+    const child = screen.getByRole("button", { name: "notes/a.md" });
     const dt = dataTransfer();
     fireEvent.dragStart(folder, { dataTransfer: dt });
     fireEvent.dragOver(folder, { dataTransfer: dt });
@@ -83,8 +83,8 @@ describe("FileTree drag & drop", () => {
 
   it("does nothing when the file is already in that folder", () => {
     const onMove = renderTree();
-    const source = screen.getByRole("button", { name: /a\.md/ });
-    const target = screen.getByRole("button", { name: /^notes$/ });
+    const source = screen.getByRole("button", { name: "notes/a.md" });
+    const target = screen.getByRole("button", { name: "notes" });
     const dt = dataTransfer();
     fireEvent.dragStart(source, { dataTransfer: dt });
     fireEvent.drop(target, { dataTransfer: dt });
@@ -96,7 +96,7 @@ describe("FileTree attachment entry points (ATT-15)", () => {
   it("offers 'upload to this folder' on a directory and passes the real path", async () => {
     const onUploadToDirectory = vi.fn();
     render(<I18nProvider initialLocale="en-US"><FileTree entries={ENTRIES} expanded={["notes"]} activePath={null} onToggle={vi.fn()} onOpen={vi.fn()} onUploadToDirectory={onUploadToDirectory}/></I18nProvider>);
-    fireEvent.contextMenu(screen.getByRole("button", { name: /^notes$/ }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "notes" }));
     await userEvent.click(screen.getByRole("menuitem", { name: /upload to this folder/i }));
     expect(onUploadToDirectory).toHaveBeenCalledWith("notes");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();

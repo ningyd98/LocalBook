@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..config import IndexSettings, VaultSettings
+from ..config import IndexSettings, RagSettings, VaultSettings
 from ..index.service import DerivedIndexService
 from .errors import VaultError, VaultNotConfigured, VaultUnavailable
 from .service import VaultService
@@ -45,12 +45,18 @@ class VaultLifecycle:
         *,
         note_text_cap: int = _DEFAULT_NOTE_TEXT_CAP,
         index: IndexSettings | None = None,
+        rag: RagSettings | None = None,
     ) -> None:
         self.settings = settings
         self.index_settings = index or IndexSettings()
+        self.rag_settings = rag
         self.service: VaultService | None = None
         self.error: VaultError | None = None
         self.index_service: DerivedIndexService | None = None
+        # M14: additive derived layer over the same index.db.  ``rag_stack``
+        # stays None when RAG is disabled, when the derived database is
+        # unavailable, or when no embedding provider could be built.
+        self.rag_stack = None
         self._note_text_cap = note_text_cap
 
     def startup(self, *, start_watcher: bool = True) -> VaultService | None:
@@ -96,8 +102,9 @@ class VaultLifecycle:
             # A scan failure leaves the index "unavailable" (503 on the M3
             # read endpoints) and never disables Vault reads/writes.
             logger.exception("derived index startup scan failed")
+        self._start_rag(service, index)
         try:
-            service.set_event_callback(index.handle_event)
+            service.set_event_callback(self._event_callback(index))
             if start_watcher:
                 service.start()
         except Exception:
@@ -110,6 +117,79 @@ class VaultLifecycle:
         )
         return service
 
+    def _start_rag(self, service: VaultService, index: DerivedIndexService) -> None:
+        """Build the M14 RAG stack over the shared derived database.
+
+        RAG is strictly additive derived data: any failure here logs and leaves
+        ``rag_stack = None`` so Vault editing, FTS search and the API keep
+        working exactly as they did before M14.
+        """
+        settings = self.rag_settings
+        if settings is None or not settings.enabled:
+            return
+        database = index.database
+        if database is None or not database.opened:
+            logger.info("rag stack skipped: derived database is unavailable")
+            return
+        try:
+            from ..rag.factory import create_rag_stack
+
+            self.rag_stack = create_rag_stack(
+                service, database, settings, index=index
+            )
+        except Exception:
+            self.rag_stack = None
+            logger.exception("rag stack initialization failed")
+            return
+        if bool(getattr(settings, "index_on_startup", False)):
+            try:
+                self.rag_stack.index.rebuild()
+            except Exception:
+                logger.exception("rag startup indexing failed")
+
+    def reconfigure_rag(self, settings: RagSettings | None) -> None:
+        """Swap the RAG stack for a new configuration without touching the Vault.
+
+        Editing RAG settings must not restart the Vault, rebuild the M4 index or
+        interrupt editing: only the derived RAG layer is torn down and rebuilt.
+        The event callback is re-attached so the watcher keeps feeding both
+        indexes.
+        """
+        service = self.service
+        if service is None:
+            self.rag_settings = settings
+            return
+        old = self.rag_stack
+        self.rag_settings = settings
+        self.rag_stack = None
+        index = self.index_service
+        try:
+            if index is not None:
+                self._start_rag(service, index)
+        finally:
+            if old is not None:
+                try:
+                    old.close()
+                except Exception:  # pragma: no cover - defensive
+                    logger.exception("old rag stack cleanup failed")
+        if index is not None:
+            service.set_event_callback(self._event_callback(index))
+
+    def _event_callback(self, index: DerivedIndexService):
+        """Fan one watcher event out to the M4 index and the M14 RAG index."""
+        rag_stack = self.rag_stack
+        if rag_stack is None:
+            return index.handle_event
+
+        def callback(event) -> None:
+            index.handle_event(event)
+            try:
+                rag_stack.index.handle_event(event)
+            except Exception:  # pragma: no cover - watcher thread must not die
+                logger.exception("rag incremental indexing failed kind=%s", event.kind)
+
+        return callback
+
     def shutdown(self) -> None:
         service = self.service
         if service is None:
@@ -121,6 +201,12 @@ class VaultLifecycle:
             # methods already make a best effort to flush/join the watcher.
             logger.exception("vault shutdown encountered an error")
         finally:
+            if self.rag_stack is not None:
+                try:
+                    self.rag_stack.close()
+                except Exception:
+                    logger.exception("rag shutdown encountered an error")
+                self.rag_stack = None
             if self.index_service is not None:
                 try:
                     self.index_service.clear()

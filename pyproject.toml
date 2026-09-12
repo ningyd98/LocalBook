@@ -1,7 +1,7 @@
 [project]
 name = "localnote-server"
-version = "1.0.0"
-description = "LocalNote Server — FastAPI API for a Markdown-first local note server (M1: Vault safe read/write core + watcher)."
+version = "1.1.0"
+description = "LocalNote — local-first Markdown note server: FastAPI backend with byte-faithful Vault I/O, SQLite derived index, graph, controlled AI agents and local-first RAG."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "UNLICENSED" }

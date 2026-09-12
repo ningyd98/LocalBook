@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "./api/client";
-import { configureWorkspaceApi, useWorkspaceStore } from "@localnote/workspace";
+import { configureWorkspaceApi, fontScaleRange, useWorkspaceStore } from "@localnote/workspace";
 import { Button, Dialog, Icon, IconButton } from "@localnote/ui";
 import { Ribbon } from "./components/Ribbon";
 import type { RibbonTool } from "./components/Ribbon";
@@ -8,6 +8,7 @@ import { WorkspaceShell } from "./components/WorkspaceShell";
 import { SearchPanel } from "./components/SearchPanel";
 import { GraphPanel } from "./components/GraphPanel";
 import { AIPanel } from "./components/AIPanel";
+import { AIProviderSwitch } from "./components/AIProviderSwitch";
 import { NotesLinksPanel } from "./components/NotesLinksPanel";
 import { AIHistoryPanel } from "./components/AIHistoryPanel";
 import { SchedulerStatus } from "./components/SchedulerStatus";
@@ -24,6 +25,14 @@ configureWorkspaceApi({
   createVaultFile: api.createVaultFile,
   createVaultDirectory: api.createVaultDirectory,
   moveVaultFile: api.moveVaultFile,
+  deleteVaultFile: api.deleteVaultFile,
+  // Recycle bin (soft delete + restore). Without these the store short-circuits
+  // with "Trash API is not configured" and nothing ever reaches the server.
+  moveToTrash: api.moveToTrash,
+  fetchTrash: api.fetchTrash,
+  restoreTrashEntry: api.restoreTrashEntry,
+  deleteTrashEntry: api.deleteTrashEntry,
+  emptyTrash: api.emptyTrash,
   // Attachment upload channel (ATT-10/ATT-11). Both must be registered here or
   // the store short-circuits with "Attachment API is not configured".
   uploadAttachmentBase64: api.uploadAttachmentBase64,
@@ -52,7 +61,7 @@ export default function App() {
   const {t,tr,errorText} = useI18n(); const store = useWorkspaceStore();
   const [sidebarRequest,setSidebarRequest] = useState(0);
   const [tool,setTool] = useState<RibbonTool>("files"); const [inspector,setInspector] = useState<"ai"|"links"|null>(null);
-  const [settingsOpen,setSettingsOpen] = useState(false); const [settingsSection,setSettingsSection] = useState<"appearance"|"vault">("appearance");
+  const [settingsOpen,setSettingsOpen] = useState(false); const [settingsSection,setSettingsSection] = useState<"appearance"|"vault"|"ai">("appearance");
   const [settings,setSettings] = useState<ServiceSettings|null>(null); const [ready,setReady] = useState(false); const [server,setServer] = useState("checking"); const [ai,setAI] = useState<AIStatusResponse|null>(null); const [systemOpen,setSystemOpen] = useState(false); const [connectionError,setConnectionError] = useState<string|null>(null); const [activityTab,setActivityTab] = useState<"history"|"scheduler">("history");
   const boundRoot = useRef<string|null>(null); const refreshVersion = useRef(0);
   const switchUncertain = useRef(false);
@@ -77,11 +86,37 @@ export default function App() {
     } else {setConnectionError(tr("无法读取服务配置，请确认后端已更新并运行。", "Cannot load service configuration. Check that the updated backend is running."));}
   },[tr]);
   // tr is recreated when locale changes; use a ref for focus refresh without duplicate startup requests.
+  /**
+   * Zoom shortcuts. The app ships its own scale, so ⌘/Ctrl +/-/0 is captured
+   * here (it would otherwise be swallowed by browser zoom) and Ctrl+wheel is
+   * mapped to the same preference. The scale applies to the whole interface.
+   */
+  useEffect(() => {
+    const step = fontScaleRange.step;
+    const scaleBy = (delta: number) => {
+      const next = useWorkspaceStore.getState().fontScale + delta;
+      useWorkspaceStore.getState().setPreferences({fontScale: Math.max(fontScaleRange.min, Math.min(fontScaleRange.max, next))});
+    };
+    const key = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      if (event.key === "+" || event.key === "=") { event.preventDefault(); scaleBy(step); }
+      else if (event.key === "-" || event.key === "_") { event.preventDefault(); scaleBy(-step); }
+      else if (event.key === "0") { event.preventDefault(); useWorkspaceStore.getState().setPreferences({fontScale: 100}); }
+    };
+    const wheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      scaleBy(event.deltaY < 0 ? step : -step);
+    };
+    window.addEventListener("keydown", key);
+    window.addEventListener("wheel", wheel, { passive: false });
+    return () => { window.removeEventListener("keydown", key); window.removeEventListener("wheel", wheel); };
+  }, []);
   const refreshRef = useRef(refresh); refreshRef.current=refresh;
   useEffect(()=>{void refreshRef.current(); const stale=()=>useWorkspaceStore.setState({vaultStale:true,workspaceFrozen:true}); const focus=()=>void refreshRef.current(); window.addEventListener("localnote-vault-changed",stale);window.addEventListener("focus",focus);return()=>{window.removeEventListener("localnote-vault-changed",stale);window.removeEventListener("focus",focus);};},[]);
   const showNotes=()=>setTool("files");
   const openNote=(path:string)=>{void store.openFile(path);setTool("files");};
-  const openSettings=(section:"appearance"|"vault"="appearance")=>{setSettingsSection(section);setSettingsOpen(true);};
+  const openSettings=(section:"appearance"|"vault"|"ai"="appearance")=>{setSettingsSection(section);setSettingsOpen(true);};
   const select=(next:RibbonTool)=>{if(next==="settings")openSettings();else if(next==="ai"){setInspector(v=>v==="ai"?null:"ai");setTool("files");}else {setTool(next);if(window.matchMedia?.("(max-width:1099px)").matches)setInspector(null);if(next==="files"||next==="search"){store.setPreferences({sidebarOpen:true});setSidebarRequest(v=>v+1);}}};
   const applySettings=(value:ServiceSettings)=>{setSettings(value);void refreshRef.current();};
   const changeVault=async(root:string,current:ServiceSettings)=>{
@@ -116,13 +151,18 @@ export default function App() {
       await useWorkspaceStore.getState().loadTree();void refreshRef.current();
     } finally {useWorkspaceStore.setState({workspaceFrozen:useWorkspaceStore.getState().vaultStale || switchUncertain.current});}
   };
+  // Status-bar zoom: one step of the same slider the settings page offers.
+  const zoomStep = fontScaleRange.step;
+  const clampScale = (value: number) => Math.max(fontScaleRange.min, Math.min(fontScaleRange.max, value));
+  const zoomIn = clampScale(store.fontScale + zoomStep);
+  const zoomOut = clampScale(store.fontScale - zoomStep);
   const session=store.activePath?store.sessions[store.activePath]:undefined;
   const vaultLabel=store.tree.status==="ready"?t.status.connected:store.tree.status==="not_configured"?t.status.notConfigured:store.tree.status==="error"?t.status.error:store.tree.status==="unavailable"?t.status.unavailable:t.status.checking;
   const aiLabel=settings?.ai.enabled===false?tr("已关闭","Disabled"):ai?.status==="connected"?(ai.error_code==="no_matching_model"?tr("模型不可用","Model unavailable"):t.status.connected):ai?.status==="not_configured"?t.status.notConfigured:t.status.offline;
-  const right=inspector?<><header className="inspector-header"><div role="tablist" aria-label={tr("辅助工具","Inspector tools")}><button role="tab" aria-selected={inspector==="links"} onClick={()=>setInspector("links")}><Icon name="link" size={15}/>{tr("关联","Links")}</button><button role="tab" aria-selected={inspector==="ai"} onClick={()=>setInspector("ai")}><Icon name="ai" size={15}/>{t.ai.title}</button></div><IconButton onClick={()=>setInspector(null)} aria-label={tr("关闭辅助面板","Close inspector")}><Icon name="close" size={15}/></IconButton></header>{inspector==="ai"?<AIPanel enabled={settings?.ai.enabled !== false} onClose={()=>setInspector(null)} onOpenNote={openNote}/>:store.activePath?<NotesLinksPanel relations={store.relations} onOpen={openNote} onCreate={target => void store.openOrCreateLinkedNote(store.activePath, target).catch(() => undefined)} onRetry={()=>{if(store.activePath)void store.loadRelations(store.activePath);}}/>:<div className="side-empty"><Icon name="link" size={28}/><p>{tr("打开笔记，查看引用与反向链接。","Open a note to explore its outgoing links and backlinks.")}</p></div>}</>:undefined;
+  const right=inspector?<><header className="inspector-header"><div role="tablist" aria-label={tr("辅助工具","Inspector tools")}><button role="tab" aria-selected={inspector==="links"} onClick={()=>setInspector("links")}><Icon name="link" size={15}/>{tr("关联","Links")}</button><button role="tab" aria-selected={inspector==="ai"} onClick={()=>setInspector("ai")}><Icon name="ai" size={15}/>{t.ai.title}</button></div><IconButton onClick={()=>setInspector(null)} aria-label={tr("关闭辅助面板","Close inspector")}><Icon name="close" size={15}/></IconButton></header>{inspector==="ai"?<AIPanel enabled={settings?.ai.enabled !== false} revision={settings?.revision} onClose={()=>setInspector(null)} onOpenNote={openNote} onSwitched={applySettings} onManageProviders={()=>openSettings("ai")}/>:store.activePath?<NotesLinksPanel relations={store.relations} onOpen={openNote} onCreate={target => void store.openOrCreateLinkedNote(store.activePath, target).catch(() => undefined)} onRetry={()=>{if(store.activePath)void store.loadRelations(store.activePath);}}/>:<div className="side-empty"><Icon name="link" size={28}/><p>{tr("打开笔记，查看引用与反向链接。","Open a note to explore its outgoing links and backlinks.")}</p></div>}</>:undefined;
   const center=tool==="graph"?<GraphPanel onOpenNote={openNote} onClose={showNotes}/>:tool==="history"?<section className="activity"><header className="activity-header"><div><p className="eyebrow">WORKSPACE ACTIVITY</p><h1>{tr("任务与历史","Tasks & history")}</h1></div><div className="view-switch"><button aria-pressed={activityTab==="history"} onClick={()=>setActivityTab("history")}>{tr("操作记录","History")}</button><button aria-pressed={activityTab==="scheduler"} onClick={()=>setActivityTab("scheduler")}>{tr("计划任务","Schedules")}</button></div></header>{activityTab==="history"?<AIHistoryPanel onClose={showNotes}/>:<SchedulerStatus active={server==="connected"} onPreview={id=>{void store.selectHistory(id);setActivityTab("history");}}/>}</section>:undefined;
-  return <div className="app-shell" data-theme={store.theme}><Ribbon activeTool={settingsOpen?"settings":inspector==="ai"&&tool==="files"?"ai":tool} onSelect={select}/><div className="app-content">{connectionError&&<div role="alert" className="connection-banner">{connectionError}<Button onClick={()=>void refresh()}>{t.status.refreshStatus}</Button></div>}<WorkspaceShell sidebarRequest={sidebarRequest} apiReady={ready} vaultName={boundRoot.current?.split("/").at(-1)??"LocalNote"} leftView={tool==="search"?<SearchPanel onOpen={openNote} onClose={showNotes}/>:undefined} centerView={center} inspector={right} onToggleInspector={()=>setInspector(v=>v?null:"links")} onShowNotes={showNotes} onOpenSettings={()=>openSettings("vault")} onOpenSearch={()=>select("search")} onOpenGraph={()=>setTool("graph")}/><footer className="status-bar"><button onClick={()=>setSystemOpen(true)} title={tr("查看连接状态","View connection status")}><span className={`status-dot ${server==="connected"?"ok":"warn"}`}/>{tr("本地服务","Local service")} · {server==="connected"?t.status.connected:server==="disconnected"?t.status.disconnected:t.status.checking}</button><span className="status-divider"/><button onClick={()=>openSettings("vault")}>{tr("笔记库","Vault")}：{vaultLabel}</button><button onClick={()=>setSystemOpen(true)}><Icon name="ai" size={12}/>AI：{aiLabel}</button><div className="status-spacer"/>{session&&<><span className="word-count">{tr(`${Array.from(session.content).length} 字符`,`${Array.from(session.content).length} characters`)}</span><span className={`save-indicator ${session.saveState}`} role="status"><span className={`status-dot ${session.dirty?"warn":"ok"}`}/>{session.dirty&&session.saveState==="saved"?tr("未保存","Unsaved"):t.saveState[session.saveState]}</span><span className="encoding">UTF-8 · {session.lineSeparator}</span></>}<span className="local-label">LOCAL FIRST</span></footer></div>
+  return <div className="app-shell" data-theme={store.theme}><Ribbon activeTool={settingsOpen?"settings":inspector==="ai"&&tool==="files"?"ai":tool} onSelect={select}/><div className="app-content">{connectionError&&<div role="alert" className="connection-banner">{connectionError}<Button onClick={()=>void refresh()}>{t.status.refreshStatus}</Button></div>}<WorkspaceShell sidebarRequest={sidebarRequest} apiReady={ready} vaultName={boundRoot.current?.split("/").at(-1)??"LocalNote"} leftView={tool==="search"?<SearchPanel onOpen={openNote} onClose={showNotes}/>:undefined} centerView={center} inspector={right} onToggleInspector={()=>setInspector(v=>v?null:"links")} onShowNotes={showNotes} onOpenSettings={()=>openSettings("vault")} onOpenSearch={()=>select("search")} onOpenGraph={()=>setTool("graph")}/><footer className="status-bar"><button onClick={()=>setSystemOpen(true)} title={tr("查看连接状态","View connection status")}><span className={`status-dot ${server==="connected"?"ok":"warn"}`}/>{tr("本地服务","Local service")} · {server==="connected"?t.status.connected:server==="disconnected"?t.status.disconnected:t.status.checking}</button><span className="status-divider"/><button onClick={()=>openSettings("vault")}>{tr("笔记库","Vault")}：{vaultLabel}</button><button onClick={()=>setSystemOpen(true)}><Icon name="ai" size={12}/>AI：{aiLabel}</button><AIProviderSwitch variant="status" revision={settings?.revision} disabled={settings?.ai.enabled === false} onSwitched={applySettings} onManage={()=>openSettings("ai")}/><div className="status-spacer"/><div className="font-zoom" role="group" aria-label={tr("字号缩放","Text size")}><IconButton onClick={()=>store.setPreferences({fontScale: zoomOut})} disabled={store.fontScale<=fontScaleRange.min} title={tr("缩小字号","Decrease text size")} aria-label={tr("缩小字号","Decrease text size")}><Icon name="minus" size={13}/></IconButton><button type="button" className="font-zoom-value" onClick={()=>store.setPreferences({fontScale:100})} title={tr("恢复默认字号","Reset text size")}>{store.fontScale}%</button><IconButton onClick={()=>store.setPreferences({fontScale: zoomIn})} disabled={store.fontScale>=fontScaleRange.max} title={tr("放大字号","Increase text size")} aria-label={tr("放大字号","Increase text size")}><Icon name="plus" size={13}/></IconButton></div>{session&&<><span className="word-count">{tr(`${Array.from(session.content).length} 字符`,`${Array.from(session.content).length} characters`)}</span><span className={`save-indicator ${session.saveState}`} role="status"><span className={`status-dot ${session.dirty?"warn":"ok"}`}/>{session.dirty&&session.saveState==="saved"?tr("未保存","Unsaved"):t.saveState[session.saveState]}</span><span className="encoding">UTF-8 · {session.lineSeparator}</span></>}<span className="local-label">LOCAL FIRST</span></footer></div>
     {settingsOpen&&<SettingsPanel settings={settings} onClose={()=>setSettingsOpen(false)} onSaved={applySettings} onSwitch={changeVault} initialSection={settingsSection}/>}
-    {systemOpen&&<Dialog label={tr("连接状态","Connection status")} onClose={()=>setSystemOpen(false)} className="connection-dialog"><header className="dialog-header"><h2>{tr("连接状态","Connection status")}</h2><IconButton onClick={()=>setSystemOpen(false)} aria-label={t.buttons.close}><Icon name="close"/></IconButton></header><div className="connection-content"><div className="setting-row"><span>{t.status.server}</span><strong>{server==="connected"?t.status.connected:server==="disconnected"?t.status.disconnected:t.status.checking}</strong></div><div className="setting-row"><span>{t.status.vault}</span><strong>{vaultLabel}</strong></div><div className="setting-row"><span>AI</span><strong>{aiLabel}</strong></div><p className="path-text">{settings?.ai.chat_model === "auto" ? ai?.selected_model ?? ai?.qwen_model ?? tr("自动选择模型","Automatic model") : settings?.ai.chat_model}</p>{ai?.message&&<p className="settings-tip">{errorText({code:ai.error_code,message:ai.message})}</p>}<div className="settings-actions"><Button onClick={()=>void refresh()}><Icon name="refresh" size={15}/>{t.status.refreshStatus}</Button><Button onClick={()=>{setSystemOpen(false);setTool("history");setActivityTab("scheduler");}}>{tr("查看计划任务","View schedules")}</Button></div></div></Dialog>}
+    {systemOpen&&<Dialog label={tr("连接状态","Connection status")} onClose={()=>setSystemOpen(false)} className="connection-dialog"><header className="dialog-header"><h2>{tr("连接状态","Connection status")}</h2><IconButton onClick={()=>setSystemOpen(false)} aria-label={t.buttons.close}><Icon name="close"/></IconButton></header><div className="connection-content"><div className="setting-row"><span>{t.status.server}</span><strong>{server==="connected"?t.status.connected:server==="disconnected"?t.status.disconnected:t.status.checking}</strong></div><div className="setting-row"><span>{t.status.vault}</span><strong>{vaultLabel}</strong></div><div className="setting-row"><span>AI</span><strong>{aiLabel}</strong></div><div className="setting-row"><span>{tr("AI 供应商","AI provider")}</span><strong>{settings?.ai.profiles?.find(p=>p.id===settings.ai.active_profile_id)?.name ?? "—"}</strong></div><p className="path-text">{settings?.ai.chat_model === "auto" ? ai?.selected_model ?? ai?.qwen_model ?? tr("自动选择模型","Automatic model") : settings?.ai.chat_model}</p>{ai?.message&&<p className="settings-tip">{errorText({code:ai.error_code,message:ai.message})}</p>}<div className="settings-actions"><Button onClick={()=>void refresh()}><Icon name="refresh" size={15}/>{t.status.refreshStatus}</Button><Button onClick={()=>{setSystemOpen(false);setTool("history");setActivityTab("scheduler");}}>{tr("查看计划任务","View schedules")}</Button></div></div></Dialog>}
   </div>;
 }

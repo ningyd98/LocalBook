@@ -74,6 +74,10 @@ class AIStatusService:
         max_models_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
         qwen_match_pattern: str = _DEFAULT_QWEN_PATTERN,
         chat_model: str = "auto",
+        trust_env: bool = False,
+        profile_id: str | None = None,
+        profile_name: str | None = None,
+        profile_kind: str | None = None,
         transport=None,
         client_factory: Callable[[], ModelDiscoveryClient] | None = None,
     ) -> None:
@@ -84,6 +88,12 @@ class AIStatusService:
         self._max_bytes = max_models_response_bytes
         self._pattern = qwen_match_pattern
         self._chat_model = chat_model
+        self._profile = {
+            "active_profile_id": profile_id,
+            "active_profile_name": profile_name,
+            "active_profile_kind": profile_kind,
+        }
+        self._trust_env = bool(trust_env)
         if client_factory is not None:
             self._client_factory = client_factory
         else:
@@ -98,6 +108,7 @@ class AIStatusService:
                 connect_timeout_seconds=self._connect_timeout,
                 request_timeout_seconds=self._request_timeout,
                 max_response_bytes=self._max_bytes,
+                trust_env=self._trust_env,
             )
             return OMLXModelDiscoveryClient(config, transport=transport)
 
@@ -105,7 +116,18 @@ class AIStatusService:
 
     @classmethod
     def from_ai_settings(cls, ai, transport=None) -> AIStatusService:
-        """Build from ``server.config.AISettings`` (duck-typed to avoid cycles)."""
+        """Build from ``server.config.AISettings`` (duck-typed to avoid cycles).
+
+        The applied provider profile is attached when the object provides one
+        (PLAN-PROVIDERS); plain settings objects keep the legacy behaviour.
+        """
+        profile = None
+        get_profile = getattr(ai, "effective_profile", None)
+        if callable(get_profile):
+            try:
+                profile = get_profile()
+            except Exception:  # a probe must never fail on profile metadata
+                profile = None
         return cls(
             base_url=ai.base_url,
             api_key=getattr(ai, "api_key", None),
@@ -114,6 +136,10 @@ class AIStatusService:
             max_models_response_bytes=ai.max_models_response_bytes,
             qwen_match_pattern=ai.qwen_match_pattern,
             chat_model=ai.chat_model,
+            trust_env=bool(getattr(ai, "use_env_proxy", False)),
+            profile_id=getattr(profile, "id", None),
+            profile_name=getattr(profile, "display_name", None),
+            profile_kind=getattr(profile, "kind", None),
             transport=transport,
         )
 
@@ -121,6 +147,7 @@ class AIStatusService:
         checked_at = _now()
         if self._base_url is None:
             return AIStatusResponse(
+                **self._profile,
                 status=AIStatus.NOT_CONFIGURED,
                 endpoint=None,
                 error_code="not_configured",
@@ -138,6 +165,7 @@ class AIStatusService:
                 endpoint,
             )
             return AIStatusResponse(
+                **self._profile,
                 status=AIStatus.OFFLINE,
                 endpoint=endpoint,
                 error_code=exc.code,
@@ -147,6 +175,7 @@ class AIStatusService:
         except Exception:  # defensive: never let a probe crash the route
             logger.exception("ai_status unexpected failure endpoint=%s", endpoint)
             return AIStatusResponse(
+                **self._profile,
                 status=AIStatus.OFFLINE,
                 endpoint=endpoint,
                 error_code="unknown",
@@ -172,6 +201,7 @@ class AIStatusService:
                 len(models),
             )
             return AIStatusResponse(
+                **self._profile,
                 status=AIStatus.CONNECTED,
                 endpoint=endpoint,
                 qwen_model=None,
@@ -189,6 +219,7 @@ class AIStatusService:
             len(models),
         )
         return AIStatusResponse(
+            **self._profile,
             status=AIStatus.CONNECTED,
             endpoint=endpoint,
             qwen_model=qwen_model,

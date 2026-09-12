@@ -15,11 +15,19 @@ A missing Vault root means "not configured" and never blocks startup.
 An AI ``base_url`` of ``None`` (or empty after trimming) means
 ``not_configured``; the default value points at the local oMLX server, so with
 oMLX down the status probe degrades to ``offline`` instead.
+
+PLAN-PROVIDERS adds the multi-provider library: ``ai.profiles`` keeps one
+:class:`ProviderProfile` per configured supplier (endpoint, credential, model
+and generation knobs) and ``ai.active_profile_id`` names the applied one. The
+flat ``ai.base_url``/``api_key``/``chat_model``/timeout fields remain the
+*applied* configuration every consumer reads, so an installation that never
+adds a profile behaves exactly as before.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -89,6 +97,9 @@ class VaultSettings(BaseModel):
     watcher_enabled: bool = True
     watcher_debounce_ms: int = Field(default=200, ge=0)
     max_file_bytes: int = Field(default=50 * 1024 * 1024, gt=0)
+    # How long a soft-deleted file or folder stays in ``.localnote/trash``
+    # before the next trash operation removes it for good.
+    trash_retention_days: int = Field(default=30, ge=1, le=3650)
     @field_validator("root", mode="before")
     @classmethod
     def _blank_root_is_none(cls, value: object) -> object:
@@ -97,12 +108,114 @@ class VaultSettings(BaseModel):
         return value
 
 
+DEFAULT_PROFILE_ID = "default"
+# Provider kinds are a closed server-side set (PLAN-PROVIDERS D8); display
+# presets live in the web UI, not in the persisted contract.
+PROVIDER_KINDS = ("omlx", "openai", "openai-compatible", "custom")
+ProviderKind = Literal["omlx", "openai", "openai-compatible", "custom"]
+# Bounded provider library (PLAN-PROVIDERS §2): enough for local + several cloud
+# routes without letting the settings file grow unbounded.
+MAX_AI_PROFILES = 30
+_PROFILE_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+
+
+def _normalize_profile_id(value: str) -> str:
+    """Lowercase/normalize a user-supplied profile id; ``""`` when unusable."""
+    text = "-".join(value.strip().lower().split())
+    return text if _PROFILE_ID_PATTERN.fullmatch(text) else ""
+
+
+def _default_profile_name(base_url: str | None, chat_model: str) -> str:
+    """Human label for the synthesized flat-field profile."""
+    if base_url:
+        from urllib.parse import urlsplit
+
+        host = urlsplit(base_url).netloc or base_url
+        return host
+    return chat_model if chat_model and chat_model != "auto" else "Local AI"
+
+
+class ProviderProfile(BaseModel):
+    """One saved AI provider route (endpoint + credential + model defaults).
+
+    Mirrors DSH's ``llm-pi-ai.providers`` entry shape: everything a request
+    needs lives on the profile so switching is a pointer move, never a merge of
+    half-updated global fields.
+    """
+
+    id: str = Field(min_length=1, max_length=64)
+    name: str = Field(default="", max_length=64)
+    kind: ProviderKind = "openai-compatible"
+    base_url: str | None = Field(default="http://127.0.0.1:8000/v1", max_length=4096)
+    api_key: str | None = Field(default=None, max_length=4096)
+    chat_model: str = Field(default="auto", min_length=1, max_length=256)
+    temperature: float = Field(default=0.1, ge=0, le=1)
+    max_output_tokens: int = Field(default=1200, ge=64, le=8192)
+    request_timeout_seconds: float = Field(default=60.0, gt=0, le=120)
+    connect_timeout_seconds: float = Field(default=0.5, gt=0, le=10)
+    max_models_response_bytes: int = Field(default=1_000_000, gt=0)
+    # Server-owned: never accepted from a client payload.
+    builtin: bool = False
+    source: Literal["settings", "env", "default"] = "settings"
+    from_env: bool = False
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _id_is_slug(cls, value: object) -> str:
+        normalized = _normalize_profile_id(value) if isinstance(value, str) else ""
+        if not normalized:
+            raise ValueError("Profile id must be 1-64 chars of a-z, 0-9, '.', '_' or '-'")
+        return normalized
+
+    @field_validator("name", "chat_model", mode="before")
+    @classmethod
+    def _trim_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("base_url", mode="before")
+    @classmethod
+    def _blank_base_url_is_none(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().rstrip("/") or None
+        return value
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _blank_api_key_is_none(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    @field_validator("chat_model")
+    @classmethod
+    def _model_not_blank(cls, value: str) -> str:
+        if not value:
+            raise ValueError("Model must not be blank")
+        return value
+
+    @property
+    def display_name(self) -> str:
+        return self.name or self.id
+
+
 class AISettings(BaseModel):
-    """Bounded, additive settings for read-only AI workflows."""
+    """Bounded, additive settings for read-only AI workflows.
+
+    Since PLAN-PROVIDERS the flat fields below are the **currently applied
+    configuration** (what every AI consumer reads), while ``profiles`` holds the
+    saved multi-provider library and ``active_profile_id`` names the entry the
+    flat fields were projected from.  The two views are kept consistent by
+    :meth:`effective_profile` / :meth:`with_profile`; ``Runtime`` owns revision,
+    persistence and rollback.
+    """
 
     enabled: bool = True
-    # Only the local oMLX provider is wired (matches AIStatusResponse.provider).
-    provider: Literal["omlx"] = "omlx"
+    # The applied provider kind; kept for the status/probe contract. It follows
+    # the active profile's ``kind`` (PLAN-PROVIDERS D6). ``omlx`` stays the
+    # default so an untouched installation behaves exactly as before.
+    provider: ProviderKind = "omlx"
     base_url: str | None = "http://127.0.0.1:8000/v1"
     # Optional bearer token for OpenAI-compatible endpoints that require
     # authentication. Empty/None means "send no Authorization header". The
@@ -122,6 +235,17 @@ class AISettings(BaseModel):
     max_output_tokens: int = Field(default=1200, ge=64, le=8192)
     max_models_response_bytes: int = Field(default=1_000_000, gt=0)
     qwen_match_pattern: str = r"qwen3\.?5[-_ ]?4b"
+    # Shell proxy support is opt-in. httpx's default (`trust_env=True`) reads
+    # ``HTTP_PROXY``/``NO_PROXY`` from the environment and *raises* while parsing
+    # a malformed one (e.g. a ``NO_PROXY`` containing an IPv6 literal), which
+    # would break every local model call for a user who never asked LocalNote to
+    # use a proxy at all. Set ``LOCALNOTE_AI__USE_ENV_PROXY=1`` to opt back in
+    # when the endpoint really is reached through a corporate proxy.
+    use_env_proxy: bool = False
+    # Saved provider library. Empty for the single-provider legacy layout —
+    # nothing is written to disk until the user actually adds a profile.
+    profiles: list[ProviderProfile] = Field(default_factory=list, max_length=MAX_AI_PROFILES)
+    active_profile_id: str = Field(default=DEFAULT_PROFILE_ID, min_length=1, max_length=64)
 
     @field_validator("api_key", mode="before")
     @classmethod
@@ -133,6 +257,163 @@ class AISettings(BaseModel):
             trimmed = value.strip()
             return trimmed or None
         return value
+
+    @field_validator("active_profile_id", mode="before")
+    @classmethod
+    def _blank_active_profile(cls, value: object) -> str:
+        normalized = _normalize_profile_id(value) if isinstance(value, str) else ""
+        return normalized or DEFAULT_PROFILE_ID
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _consistent_profile_pointers(cls, data: Any, handler):
+        """Keep ``active_profile_id`` resolvable, ids unique, flat fields applied.
+
+        Projection lives here (not only in :meth:`effective_profile`) so every
+        construction path — environment variables, the saved settings file, a
+        partial update — leaves the flat fields equal to the applied profile.
+        An empty library stays empty: the single-provider layout is only
+        materialized when something actually writes (PLAN-PROVIDERS D3).
+        """
+        result = handler(data)
+        if not isinstance(result, cls) or not result.profiles:
+            return result
+        seen: set[str] = set()
+        for profile in result.profiles:
+            if profile.id in seen:
+                raise ValueError(f"Duplicate AI profile id: {profile.id}")
+            seen.add(profile.id)
+        if result.active_profile_id not in seen:
+            result.active_profile_id = result.profiles[0].id
+        supplied = (
+            {key for key in data if key in cls.model_fields} if isinstance(data, dict) else set()
+        )
+        before = {field: getattr(result, field) for field in supplied}
+        active = next(p for p in result.profiles if p.id == result.active_profile_id)
+        result._project(active)
+        # A flat field the caller supplied wins over the stored profile — unless
+        # the caller also picked the profile, in which case the saved pointer is
+        # authoritative (loading a saved state). This is what lets a partial
+        # update edit the applied entry instead of silently reverting it.
+        if "active_profile_id" in supplied:
+            return result
+        for field, value in before.items():
+            setattr(result, field, value)
+        return result
+
+    def effective_profile(self) -> ProviderProfile:
+        """The applied profile, projected so flat fields stay the source of truth.
+
+        Read-only with respect to the library: with no saved profile it returns
+        (and applies) the synthesized flat-field route without materializing an
+        entry, so probing status or reading a snapshot can never turn a
+        single-provider installation into a multi-provider one (D3).
+        """
+        if not self.profiles:
+            profile = self.synthesized_profiles()[0]
+        else:
+            profile = next(
+                (item for item in self.profiles if item.id == self.active_profile_id),
+                # Defensive: the validator keeps this unreachable, but a read
+                # path must never raise on a hand-assembled instance.
+                self.profiles[0],
+            )
+        self._project(profile)
+        return profile
+
+    def with_flat_overrides(self, values: dict[str, Any]) -> AISettings:
+        """Apply a validated flat update on top of the current applied route.
+
+        The profile library is *not* rebuilt from a full field dump here: only
+        the caller's own keys are honored, so an omitted tuning knob keeps the
+        applied value and the profile view cannot silently reset it
+        (PLAN-PROVIDERS D2). ``api_key`` keeps its documented semantics — absent
+        or ``None`` preserves the stored secret, ``""`` clears it.
+        """
+        updates = dict(values)
+        if "api_key" in updates:
+            if updates["api_key"] is None:
+                updates.pop("api_key")
+            elif isinstance(updates["api_key"], str) and not updates["api_key"].strip():
+                # Same normalization as the ``api_key`` validator: an explicit
+                # blank clears the secret and is never persisted as "".
+                updates["api_key"] = None
+        flat = self.effective_profile().model_dump()
+        flat.update(updates)
+        flat["provider"] = flat.pop("kind")
+        merged = self.model_copy(update=flat)
+        merged.active_profile_id = self.active_profile_id
+        if not self.profiles:
+            return merged
+        active = next(p for p in merged.profiles if p.id == merged.active_profile_id)
+        return merged.with_profile(
+            active.model_copy(update={k: v for k, v in flat.items() if k != "provider"}),
+            activate=True,
+        )
+
+    def synthesized_profiles(self) -> list[ProviderProfile]:
+        """Provider library as the UI must see it: never empty for a live install."""
+        if self.profiles:
+            return list(self.profiles)
+        return [
+            ProviderProfile(
+                id=DEFAULT_PROFILE_ID,
+                name=_default_profile_name(self.base_url, self.chat_model),
+                kind=self.provider,
+                base_url=self.base_url,
+                api_key=self.api_key,
+                chat_model=self.chat_model,
+                temperature=self.temperature,
+                max_output_tokens=self.max_output_tokens,
+                request_timeout_seconds=self.request_timeout_seconds,
+                connect_timeout_seconds=self.connect_timeout_seconds,
+                max_models_response_bytes=self.max_models_response_bytes,
+                builtin=True,
+                source="default",
+            )
+        ]
+
+    def ensure_active_profile(self) -> AISettings:
+        """Materialize the flat-field profile when no profiles are saved."""
+        if self.profiles:
+            return self
+        self.profiles = [self.synthesized_profiles()[0].model_copy(update={"source": "settings"})]
+        self.active_profile_id = self.profiles[0].id
+        return self
+
+    def with_profile(self, profile: ProviderProfile, *, activate: bool = True) -> AISettings:
+        """Return a copy with ``profile`` upserted, optionally applied.
+
+        Pure: neither ``self`` nor the applied flat fields of ``self`` change, so
+        a failed transition leaves the running configuration untouched.
+        """
+        updated = self.model_copy(deep=True).ensure_active_profile()
+        updated.profiles = [item for item in updated.profiles if item.id != profile.id]
+        updated.profiles.append(profile)
+        if activate:
+            updated.active_profile_id = profile.id
+            updated._project(profile)
+        return updated
+
+    def without_profile(self, profile_id: str) -> AISettings:
+        """Return a copy without ``profile_id``; the applied entry stays applied."""
+        updated = self.model_copy(deep=True).ensure_active_profile()
+        updated.profiles = [item for item in updated.profiles if item.id != profile_id]
+        if profile_id == updated.active_profile_id and updated.profiles:
+            updated.active_profile_id = updated.profiles[0].id
+        return updated
+
+    def _project(self, profile: ProviderProfile) -> None:
+        """Mirror a profile onto the flat fields (flat fields stay the truth)."""
+        self.provider = profile.kind
+        self.base_url = profile.base_url
+        self.api_key = profile.api_key
+        self.chat_model = profile.chat_model
+        self.temperature = profile.temperature
+        self.max_output_tokens = profile.max_output_tokens
+        self.request_timeout_seconds = profile.request_timeout_seconds
+        self.connect_timeout_seconds = profile.connect_timeout_seconds
+        self.max_models_response_bytes = profile.max_models_response_bytes
 
 
 _CRON_FIELD_BOUNDS: tuple[
@@ -318,6 +599,135 @@ class IndexSettings(BaseModel):
         return tokenizer
 
 
+class RagSettings(BaseModel):
+    """Local-first RAG knobs (M14).
+
+    Everything here is optional and safe by default: with no embedding endpoint
+    configured the index uses the documented local fallback embedder and the
+    vector path degrades, while the lexical (FTS) path keeps working. The chat
+    model is *never* assumed to be able to embed — ``embedding_model`` is an
+    independent setting, and a change to any of provider/model/dimension marks
+    the stored vectors outdated instead of silently mixing two vector spaces.
+    """
+
+    enabled: bool = True
+
+    # Embedding endpoint (independent from ai.*: chat and embedding models may
+    # be entirely different servers).
+    embedding_provider: str = "hash"
+    embedding_base_url: str = ""
+    embedding_model: str = "local-hash"
+    embedding_api_key: str = ""
+    embedding_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
+    embedding_batch_size: int = Field(default=32, ge=1, le=512)
+    embedding_dimension: int = Field(default=256, ge=0, le=8192)
+    embedding_version: str = "v1"
+    # Optional cosine floor for "nothing is relevant" (model dependent; 0.0
+    # disables it). See server/rag/retrieval/vector.py::DEFAULT_MIN_SCORE.
+    vector_min_score: float = Field(default=0.0, ge=-1.0, le=1.0)
+
+    # Chunking
+    chunk_target_tokens: int = Field(default=800, ge=50, le=8000)
+    chunk_max_tokens: int = Field(default=1200, ge=50, le=16000)
+    chunk_overlap_tokens: int = Field(default=100, ge=0, le=2000)
+
+    # Retrieval
+    fts_top_k: int = Field(default=30, ge=1, le=200)
+    vector_top_k: int = Field(default=30, ge=1, le=200)
+    fusion_top_k: int = Field(default=20, ge=1, le=200)
+    rerank_top_k: int = Field(default=10, ge=1, le=200)
+    context_top_k: int = Field(default=6, ge=1, le=50)
+    rrf_k: int = Field(default=60, ge=1, le=1000)
+
+    # Optional link/graph expansion (roadmap item ③, M14). Everything here is
+    # neutral by default: with ``link_retrieval_enabled`` off the factory wires
+    # no link retriever at all, so candidate generation, the RRF input lists and
+    # the fused order stay byte-for-byte the pre-③ behaviour. The four weights
+    # mirror ``server.rag.retrieval.link.LinkRetriever``'s constructor defaults
+    # (1.0 / 0.8 / 0.6 / 0.4) and only rank *within* that retriever; the RRF
+    # weight that scales its whole list is a constructor parameter deliberately
+    # not surfaced here yet (see ``server.rag.factory``).
+    link_retrieval_enabled: bool = False
+    link_top_k: int = Field(default=20, ge=1, le=200)
+    wikilink_weight: float = Field(default=1.0, ge=0.0, le=5.0)
+    backlink_weight: float = Field(default=0.8, ge=0.0, le=5.0)
+    tag_weight: float = Field(default=0.6, ge=0.0, le=5.0)
+    graph_weight: float = Field(default=0.4, ge=0.0, le=5.0)
+
+    # Context budget
+    context_max_tokens: int = Field(default=4000, ge=200, le=64000)
+    context_max_tokens_per_document: int = Field(default=1800, ge=100, le=64000)
+    context_merge_adjacent: bool = True
+    context_merge_gap_lines: int = Field(default=5, ge=0, le=100)
+
+    # Optional reranker (disabled by default: M14 adds no external dependency).
+    # ``lexical`` runs locally; ``openai_compatible`` posts to
+    # ``{reranker_base_url}/rerank`` (Jina/Cohere/vLLM style) and degrades to the
+    # fused order whenever the endpoint is missing or failing.
+    reranker_enabled: bool = False
+    reranker_provider: str = "lexical"
+    reranker_base_url: str = ""
+    reranker_model: str = ""
+    reranker_api_key: str = ""
+    reranker_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
+    reranker_min_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Same opt-in as ``ai.use_env_proxy``: local embedding/rerank endpoints must
+    # not break because of a malformed shell proxy variable.
+    use_env_proxy: bool = False
+
+    # Index maintenance
+    index_on_startup: bool = False
+    debounce_seconds: float = Field(default=1.5, ge=0.0, le=60)
+    require_citation: bool = True
+    include_retrieval_debug: bool = False
+
+    @model_validator(mode="after")
+    def _max_not_below_target(self) -> "RagSettings":
+        """``chunk_max_tokens`` may never be smaller than the target.
+
+        Enforced after the whole model is built (not per-field) so a partial
+        settings patch that only raises the target is validated against the
+        merged configuration instead of the request body alone.
+        """
+        if int(self.chunk_max_tokens) < int(self.chunk_target_tokens):
+            raise ValueError("chunk_max_tokens must be >= chunk_target_tokens")
+        return self
+
+    def snapshot_view(self) -> dict[str, Any]:
+        """Settings surfaced to the UI: identical shape, secret never echoed.
+
+        ``embedding_api_key`` is replaced by ``embedding_api_key_set`` exactly
+        like ``ai.api_key`` so the browser can never read a stored secret.
+        """
+        view = self.model_dump()
+        view.pop("embedding_api_key", None)
+        view.pop("reranker_api_key", None)
+        view["embedding_api_key_set"] = bool(self.embedding_api_key)
+        view["reranker_api_key_set"] = bool(self.reranker_api_key)
+        return view
+
+    @field_validator("reranker_provider")
+    @classmethod
+    def _known_reranker(cls, value: str) -> str:
+        normalized = str(value).strip().lower()
+        if normalized not in {"lexical", "lexical_overlap", "local", "openai_compatible", "openai", "none"}:
+            raise ValueError(
+                "reranker_provider must be one of "
+                "lexical/openai_compatible/none"
+            )
+        return normalized
+
+    @field_validator("embedding_provider")
+    @classmethod
+    def _known_provider(cls, value: str) -> str:
+        normalized = str(value).strip().lower()
+        if normalized not in {"hash", "openai_compatible", "openai", "none"}:
+            raise ValueError(
+                "embedding_provider must be one of hash/openai_compatible/openai/none"
+            )
+        return normalized
+
+
 class GraphSettings(BaseModel):
     """M5 read-only graph projection knobs (PLAN-M5 §5.3, defaults fixed).
 
@@ -447,6 +857,7 @@ class Settings(BaseSettings):
     ai: AISettings = AISettings()
     scheduler: SchedulerSettings = SchedulerSettings()
     index: IndexSettings = IndexSettings()
+    rag: RagSettings = RagSettings()
     graph: GraphSettings = GraphSettings()
     policy: PolicySettings = PolicySettings()
     history: HistorySettings = HistorySettings()

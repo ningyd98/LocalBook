@@ -42,7 +42,7 @@ const trio = {
 
 beforeEach(() => {
   useWorkspaceStore.setState({
-    tree: { entries: [], expandedPaths: [], status: "idle", error: null },
+    tree: { entries: [], expandedPaths: [], collapsedPaths: [], status: "idle", error: null },
     tabs: [],
     activePath: null,
     sessions: {},

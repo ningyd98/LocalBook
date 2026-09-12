@@ -49,6 +49,10 @@ class OMLXDiscoveryConfig:
     connect_timeout_seconds: float = 0.5
     request_timeout_seconds: float = 2.0
     max_response_bytes: int = 1_000_000
+    # Opt-in shell proxies (see ``AISettings.use_env_proxy``): httpx's default
+    # would raise while parsing a malformed ``NO_PROXY`` and turn every probe
+    # into a confusing failure.
+    trust_env: bool = False
 
 
 class ModelDiscoveryClient(Protocol):
@@ -91,6 +95,7 @@ class OMLXModelDiscoveryClient:
             timeout=timeout,
             transport=transport,
             follow_redirects=False,
+            trust_env=self._config.trust_env,
         ) as client:
             try:
                 async with client.stream("GET", self.models_url, headers=headers) as response:

@@ -43,6 +43,9 @@ export default defineConfig({
     environment: "jsdom",
     include: ["../../tests/frontend/**/*.test.{ts,tsx}"],
     setupFiles: ["../../tests/frontend/setup.ts"],
+    // `LOCALNOTE_E2E_BASE_URL` (see tests/frontend/.env.test) turns the opt-in
+    // real-backend integration test on; without it those specs skip.
+    env: { LOCALNOTE_E2E_BASE_URL: process.env.LOCALNOTE_E2E_BASE_URL ?? "" },
     css: false,
   },
 });

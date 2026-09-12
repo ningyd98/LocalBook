@@ -21,10 +21,13 @@ from server.index.service import DerivedIndexService
 from server.links.service import LinksService
 from server.metadata.service import MetadataService
 from server.policies.engine import PolicyEngine
+from server.rag.errors import RagUnavailable
+from server.rag.service import RagService
 from server.scheduler.service import SchedulerService
 from server.search.service import SearchService
 from server.vault.errors import VaultNotConfigured, VaultUnavailable
 from server.vault.service import VaultService
+from server.vault.trash import TrashService
 
 __all__ = [
     "AcceptJobRequest",
@@ -46,6 +49,8 @@ def _settings_from_app(request: Request) -> Settings:
 
 def get_ai_status_service(request: Request) -> AIStatusService:
     ai = _settings_from_app(request).ai
+    # The applied provider profile (PLAN-PROVIDERS) rides along so /ai/status
+    # can name the route it probed.
     return AIStatusService.from_ai_settings(ai if ai.enabled else ai.model_copy(update={"base_url": None}))
 
 
@@ -71,6 +76,7 @@ def get_ai_workflow_service(request: Request) -> AIWorkflowService:
             timeout_seconds=settings.request_timeout_seconds,
             connect_timeout_seconds=settings.connect_timeout_seconds,
             max_response_bytes=settings.max_models_response_bytes,
+            trust_env=bool(getattr(settings, "use_env_proxy", False)),
         ),
         vault=vault,
         index=getattr(request.app.state, "index_service", None),
@@ -90,7 +96,7 @@ def get_vault_service(request: Request) -> VaultService:
     if lifecycle is None:
         from server.vault.lifecycle import VaultLifecycle
 
-        lifecycle = VaultLifecycle(settings.vault)
+        lifecycle = VaultLifecycle(settings.vault, rag=settings.rag)
         request.app.state.vault_lifecycle = lifecycle
     service = lifecycle.startup()
     if service is None:
@@ -98,6 +104,23 @@ def get_vault_service(request: Request) -> VaultService:
     request.app.state.vault_service = service
     if lifecycle.index_service is not None:
         request.app.state.index_service = lifecycle.index_service
+    return service
+
+
+def get_trash_service(request: Request) -> TrashService:
+    """The recycle bin of the active Vault (soft delete + restore + retention).
+
+    It shares the Vault's mutation lock and safety checks, so a soft delete is
+    serialized with every other write and ``.localnote`` stays unreachable
+    through the public file API.
+    """
+    vault = get_vault_service(request)
+    service = getattr(request.app.state, "trash_service", None)
+    if service is not None and service.vault is vault:
+        return service
+    settings = _settings_from_app(request)
+    service = TrashService(vault, retention_days=settings.vault.trash_retention_days)
+    request.app.state.trash_service = service
     return service
 
 
@@ -111,6 +134,72 @@ def get_index_service(request: Request) -> DerivedIndexService:
     if index is None:
         raise VaultUnavailable()
     return index
+
+
+def get_rag_stack(request: Request):
+    """The M14 RAG stack for the active Vault (None when unavailable/disabled).
+
+    Prefers the lifecycle-owned stack published on ``app.state`` by the runtime,
+    and falls back to starting the Vault (which builds the stack) so a
+    ``TestClient`` without the lifespan still works. Raises 503 when RAG cannot
+    be built at all — RAG is optional, the rest of the API is unaffected.
+    """
+    stack = getattr(request.app.state, "rag_stack", None)
+    if stack is not None:
+        return stack
+    get_vault_service(request)
+    lifecycle = getattr(request.app.state, "vault_lifecycle", None)
+    stack = getattr(lifecycle, "rag_stack", None)
+    if stack is None:
+        raise RagUnavailable("RAG index is unavailable")
+    request.app.state.rag_stack = stack
+    return stack
+
+
+def get_rag_service(request: Request) -> RagService:
+    """The RAG service with the active chat provider bound for generation."""
+    stack = get_rag_stack(request)
+    settings = _settings_from_app(request)
+    stack.service.set_generator(_rag_generator(settings, request))
+    return stack.service
+
+
+def _rag_generator(settings, request: Request):
+    """Bind the configured chat model as the RAG generator (or None)."""
+    ai = settings.ai
+    if not ai.enabled or not ai.base_url:
+        return None
+    from ..ai.adapters.base import ChatMessage
+    from ..ai.adapters.openai_compatible import OpenAICompatibleAdapter
+    from ..ai.capabilities import resolve_chat_model
+
+    adapter = OpenAICompatibleAdapter(
+        ai.base_url,
+        api_key=ai.api_key,
+        timeout_seconds=ai.request_timeout_seconds,
+        connect_timeout_seconds=ai.connect_timeout_seconds,
+        max_response_bytes=ai.max_models_response_bytes,
+        trust_env=bool(getattr(ai, "use_env_proxy", False)),
+    )
+
+    async def generate(system_prompt: str, user_prompt: str) -> tuple[str, str]:
+        model = resolve_chat_model(
+            await adapter.list_models(), ai.chat_model, ai.qwen_match_pattern
+        )
+        result = await adapter.chat(
+            model=model,
+            messages=[
+                ChatMessage("system", system_prompt),
+                ChatMessage("user", user_prompt),
+            ],
+            temperature=ai.temperature,
+            response_schema=None,
+            timeout_seconds=ai.request_timeout_seconds,
+            max_output_tokens=ai.max_output_tokens,
+        )
+        return result.content, result.model
+
+    return generate
 
 
 def get_metadata_service(request: Request) -> MetadataService:
@@ -170,6 +259,7 @@ def _agent_service_from(
             timeout_seconds=ai_settings.request_timeout_seconds,
             connect_timeout_seconds=ai_settings.connect_timeout_seconds,
             max_response_bytes=ai_settings.max_models_response_bytes,
+            trust_env=bool(getattr(ai_settings, "use_env_proxy", False)),
         )
     tool_context = ToolContext(
         vault=vault,

@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { Icon } from "@localnote/ui";
 import type { VaultFileEntry } from "@localnote/protocol";
-import { isEditableMarkdown } from "@localnote/workspace";
+import { buildTreeHierarchy, foldedPaths, isEditableMarkdown, isPathExpanded, visibleTreeRows } from "@localnote/workspace";
 import { useI18n } from "../i18n";
+import { ContextMenu } from "./ContextMenu";
+import type { ContextMenuItem } from "./ContextMenu";
 
 /** True when ``path`` is ``ancestor`` itself or lives inside it. */
 function isInside(path: string, ancestor: string): boolean {
@@ -13,6 +15,8 @@ function isInside(path: string, ancestor: string): boolean {
 export interface FileTreeProps {
   entries: VaultFileEntry[];
   expanded: string[];
+  /** Paths the user collapsed explicitly; everything else shows its children. */
+  collapsed?: string[];
   activePath?: string | null;
   onToggle: (p: string) => void;
   onOpen: (p: string) => void;
@@ -24,13 +28,22 @@ export interface FileTreeProps {
   /** Rename a file in place (same-directory move). Rejects invalid names. */
   onRename?: (path: string, newName: string) => Promise<string>;
   activeAttachmentPath?: string | null;
+  /** Context menu → create a document nested inside that row's container. */
+  onNewChildNote?: (path: string) => void;
+  /** Context menu → create a document beside that note. */
+  onNewSiblingNote?: (path: string) => void;
+  /** Context menu on empty tree space → create a document at the Vault root. */
+  onNewRootNote?: () => void;
+  /** Context menu → ask to move that file or folder to the recycle bin. */
+  onDelete?: (path: string) => void;
 }
 
-export function FileTree({ entries, expanded, activePath, onToggle, onOpen, onMove, onOpenAttachment, onUploadToDirectory, onRename, activeAttachmentPath }: FileTreeProps) {
+export function FileTree({ entries, expanded, collapsed = [], activePath, onToggle, onOpen, onMove, onOpenAttachment, onUploadToDirectory, onRename, activeAttachmentPath, onNewChildNote, onNewSiblingNote, onNewRootNote, onDelete }: FileTreeProps) {
   const { tr } = useI18n();
   const [dragging, setDragging] = useState<string | null>(null);
   const [over, setOver] = useState<string | null>(null);
-  const [menu, setMenu] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const [blankMenu, setBlankMenu] = useState<{ x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -56,15 +69,15 @@ export function FileTree({ entries, expanded, activePath, onToggle, onOpen, onMo
       setRenameError(value?.code === "already_exists" ? tr("同名文件已存在", "A file with that name already exists") : tr("重命名失败，请检查名称后重试", "Rename failed. Check the name and retry."));
     }
   };
-  const visible = useMemo(() => {
-    const open = new Set(expanded);
-    return entries.filter(entry => { const parts = entry.path.split("/"); return !parts.some(p => p.startsWith(".")) && parts.slice(0, -1).every((_, i) => open.has(parts.slice(0, i + 1).join("/"))); }).sort((a,b) => {
-      // Sort siblings hierarchically, so a directory's children stay beneath it.
-      const aa = a.path.split("/"), bb = b.path.split("/");
-      for (let i = 0; i < Math.min(aa.length, bb.length); i++) { if (aa[i] === bb[i]) continue; const ad = i < aa.length - 1 || a.kind === "directory", bd = i < bb.length - 1 || b.kind === "directory"; return ad !== bd ? (ad ? -1 : 1) : aa[i]!.localeCompare(bb[i]!); }
-      return aa.length - bb.length;
-    });
-  }, [entries, expanded]);
+  /**
+   * The hierarchy is derived from the listing plus the user's collapses: a note
+   * that owns a child folder (`notes/A.md` + `notes/A/`) is rendered as the
+   * parent of that folder's contents, so collapse/expand works per document
+   * level rather than per folder only.
+   */
+  const expansion = useMemo(() => ({ expandedPaths: expanded, collapsedPaths: collapsed }), [expanded, collapsed]);
+  const hierarchy = useMemo(() => ({ nodes: buildTreeHierarchy(entries), owner: foldedPaths(entries) }), [entries]);
+  const rows = useMemo(() => visibleTreeRows(hierarchy.nodes, hierarchy.owner, expansion), [hierarchy, expansion]);
   /** A drop is legal only on a folder that is not the source or its descendant. */
   const canDrop = (folder: string) => Boolean(onMove && dragging) && !isInside(folder, dragging!);
   const drop = (event: DragEvent, folder: string) => {
@@ -76,45 +89,67 @@ export function FileTree({ entries, expanded, activePath, onToggle, onOpen, onMo
     if (parent === folder) return; // already there
     onMove(source, folder);
   };
-  return <div role="tree" className="file-tree">{visible.map(entry => {
-    const folder = entry.kind === "directory", open = expanded.includes(entry.path), droppable = folder && canDrop(entry.path);
-    const markdown = !folder && isEditableMarkdown(entry.path);
+  const menuItems = (path: string, kind: "file" | "directory"): ContextMenuItem[] => {
+    const items: ContextMenuItem[] = [];
+    if (onNewChildNote) items.push({ id: "child", label: tr("新建子文档", "New nested document"), icon: "note", onSelect: () => onNewChildNote(path) });
+    // A folder row is already a container, so the "beside it" action simply
+    // means "the next document inside it"; a note row gets a real sibling.
+    if (onNewSiblingNote) items.push({ id: "sibling", label: kind === "directory" ? tr("在此文件夹新建文档", "New document in this folder") : tr("新建同级文档", "New document at this level"), icon: "note", onSelect: () => onNewSiblingNote(path) });
+    if (onRename && kind === "file") items.push({ id: "rename", label: tr("重命名", "Rename"), icon: "edit", separated: items.length > 0, onSelect: () => startRename(path) });
+    if (onUploadToDirectory && kind === "directory") items.push({ id: "upload", label: tr("上传到该目录", "Upload to this folder"), icon: "paperclip", separated: items.length > 0, onSelect: () => onUploadToDirectory(path) });
+    // A folder is trashed as a whole, so no row is pre-disabled: the caller
+    // confirms and the server explains any refusal.
+    if (onDelete) items.push({ id: "delete", label: tr("移到回收站", "Move to recycle bin"), icon: "trash", separated: items.length > 0, onSelect: () => onDelete(path) });
+    return items;
+  };
+  return <div role="tree" className="file-tree"
+    onContextMenu={onNewRootNote ? event => { if (event.target !== event.currentTarget) return; event.preventDefault(); setMenu(null); setBlankMenu({ x: event.clientX, y: event.clientY }); } : undefined}>
+    {rows.map(row => {
+    const folder = row.kind === "directory", open = isPathExpanded(row.path, expansion), droppable = folder && canDrop(row.path);
+    const markdown = !folder && isEditableMarkdown(row.path);
     // Attachment rows are clickable (ATT-15); Markdown rows still call onOpen.
     const openable = folder || markdown || Boolean(onOpenAttachment);
     const uploadHere = folder && onUploadToDirectory;
     const canRename = !folder && Boolean(onRename);
-    const rowMenu = Boolean(uploadHere || canRename);
-    const isRenaming = renaming === entry.path;
-    const selected = !folder && (entry.path === activePath || entry.path === activeAttachmentPath);
-    return <div key={entry.path} role="treeitem" aria-level={entry.path.split("/").length} aria-selected={selected} aria-expanded={folder ? open : undefined} className={`ui-tree-row ${selected ? "selected" : ""} ${dragging === entry.path ? "dragging" : ""} ${over === entry.path && droppable ? "drop-target" : ""}`}
-    onDragOver={folder && onMove ? event => { if (!canDrop(entry.path)) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setOver(entry.path); } : undefined}
-    onDragLeave={folder && onMove ? () => setOver(current => current === entry.path ? null : current) : undefined}
-    onDrop={folder && onMove ? event => drop(event, entry.path) : undefined}>
-    <button type="button" style={{paddingLeft: 10 + (entry.path.split("/").length-1)*16}} disabled={!openable} title={entry.path}
-      onClick={() => { if (folder) onToggle(entry.path); else if (markdown) onOpen(entry.path); else onOpenAttachment?.(entry.path); }}
-      onContextMenu={rowMenu ? event => { event.preventDefault(); setMenu(entry.path); } : undefined}
-      onDoubleClick={canRename ? event => { event.preventDefault(); startRename(entry.path); } : undefined}
-      aria-expanded={folder ? open : undefined}
-      draggable={Boolean(onMove)} onDragStart={onMove ? event => { setDragging(entry.path); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/localnote-path", entry.path); } : undefined} onDragEnd={onMove ? () => { setDragging(null); setOver(null); } : undefined}>{folder ? <Icon name="chevron" size={12} className={open ? "expanded" : ""}/> : <span className="tree-spacer"/>}<Icon name={folder ? "folder" : markdown ? "note" : "paperclip"} size={15}/><span>{entry.path.split("/").at(-1)}</span></button>
-    {isRenaming && <div className="tree-rename" style={{paddingLeft: 10 + (entry.path.split("/").length-1)*16}}>
+    const canNest = Boolean(onNewChildNote) || Boolean(onNewSiblingNote);
+    const rowMenu = Boolean(uploadHere || canRename || canNest || onDelete);
+    const hasChildren = row.children.length > 0;
+    const isRenaming = renaming === row.path;
+    const selected = !folder && (row.path === activePath || row.path === activeAttachmentPath);
+    return <div key={row.path} role="treeitem" aria-level={row.depth + 1} aria-selected={selected} aria-expanded={hasChildren ? open : undefined} className={`ui-tree-row ${selected ? "selected" : ""} ${dragging === row.path ? "dragging" : ""} ${over === row.path && droppable ? "drop-target" : ""}`}
+    onDragOver={folder && onMove ? event => { if (!canDrop(row.path)) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setOver(row.path); } : undefined}
+    onDragLeave={folder && onMove ? () => setOver(current => current === row.path ? null : current) : undefined}
+    onDrop={folder && onMove ? event => drop(event, row.path) : undefined}>
+    <button type="button" style={{paddingLeft: 10 + row.depth*16}} disabled={!openable} title={row.path} aria-label={row.path}
+      onClick={() => { if (folder) onToggle(row.path); else if (markdown) onOpen(row.path); else onOpenAttachment?.(row.path); }}
+      onContextMenu={rowMenu ? event => { event.preventDefault(); event.stopPropagation(); setBlankMenu(null); setMenu({ path: row.path, x: event.clientX, y: event.clientY }); } : undefined}
+      onDoubleClick={canRename ? event => { event.preventDefault(); startRename(row.path); } : undefined}
+      aria-expanded={hasChildren ? open : undefined}
+      draggable={Boolean(onMove)} onDragStart={onMove ? event => { setDragging(row.path); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/localnote-path", row.path); } : undefined} onDragEnd={onMove ? () => { setDragging(null); setOver(null); } : undefined}>
+      {hasChildren
+        ? <span className={`tree-toggle ${open ? "expanded" : ""}`} role="img" aria-label={open ? tr("收起", "Collapse") : tr("展开", "Expand")}
+            onClick={event => { event.preventDefault(); event.stopPropagation(); onToggle(row.path); }}
+            onDoubleClick={event => event.stopPropagation()}><Icon name="chevron" size={12}/></span>
+        : <span className="tree-spacer"/>}
+      <Icon name={folder ? "folder" : markdown ? "note" : "paperclip"} size={15}/><span>{row.name}</span></button>
+    {isRenaming && <div className="tree-rename" style={{paddingLeft: 10 + row.depth*16}}>
       <input
         ref={renameInput}
         className="tree-rename-input"
         value={draft}
-        aria-label={tr(`重命名 ${entry.path}`, `Rename ${entry.path}`)}
+        aria-label={tr(`重命名 ${row.path}`, `Rename ${row.path}`)}
         onChange={event => { setDraft(event.target.value); setRenameError(null); }}
         onKeyDown={event => {
-          if (event.key === "Enter") { event.preventDefault(); void submitRename(entry.path); }
+          if (event.key === "Enter") { event.preventDefault(); void submitRename(row.path); }
           else if (event.key === "Escape") { event.preventDefault(); cancelRename(); }
         }}
-        onBlur={() => { if (renaming === entry.path) cancelRename(); }}
+        onBlur={() => { if (renaming === row.path) cancelRename(); }}
       />
       {renameError && <span role="alert" className="tree-rename-error">{renameError}</span>}
     </div>}
-    {menu === entry.path && <div role="menu" className="tree-menu">
-      {canRename && <button type="button" role="menuitem" autoFocus onClick={() => startRename(entry.path)}>{tr("重命名", "Rename")}</button>}
-      {uploadHere && <button type="button" role="menuitem" autoFocus={!canRename} onClick={() => { setMenu(null); onUploadToDirectory?.(entry.path); }}>{tr("上传到该目录", "Upload to this folder")}</button>}
-      <button type="button" role="menuitem" onClick={() => setMenu(null)}>{tr("取消", "Cancel")}</button>
-    </div>}
-  </div>; })}</div>;
+  </div>; })}
+    {menu && <ContextMenu x={menu.x} y={menu.y} label={tr("文件操作", "File actions")} items={menuItems(menu.path, entries.find(entry => entry.path === menu.path)?.kind ?? "file")} onClose={() => setMenu(null)}/>}
+    {blankMenu && <ContextMenu x={blankMenu.x} y={blankMenu.y} label={tr("笔记库操作", "Vault actions")} onClose={() => setBlankMenu(null)}
+      items={[{ id: "new-note", label: tr("新建文档", "New document"), icon: "note", onSelect: () => onNewRootNote?.() }]}/>}
+  </div>;
 }

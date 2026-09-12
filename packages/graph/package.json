@@ -1,6 +1,6 @@
 {
   "name": "@localnote/graph",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "M5 graph visualisation: Graph DTO -> Graphology model, Sigma renderer and WebGL fallback (PLAN-M5 §6.2).",

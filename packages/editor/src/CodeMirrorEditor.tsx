@@ -75,6 +75,8 @@ export interface CodeMirrorEditorProps {
   onPasteImages?: (files: File[]) => void;
   onDragOver?: (event: DragEvent) => void;
   onDragLeave?: (event: DragEvent) => void;
+  /** Pointer of a right-click inside the editing surface (nested-document menu). */
+  onContextMenuAt?: (x: number, y: number) => void;
   toolbar?: ReactNode;
   handleRef?: ForwardedRef<CodeMirrorEditorHandle>;
   /** Registers a caret-insert handler for this note while the editor is mounted. */
@@ -84,7 +86,7 @@ export interface CodeMirrorEditorProps {
 }
 
 const lightTheme = EditorView.theme({
-  "&": { height: "100%", fontSize: "14px", backgroundColor: "transparent" },
+  "&": { height: "100%", fontSize: "calc(14px * var(--font-scale, 1))", backgroundColor: "transparent" },
   ".cm-scroller": { overflow: "auto", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" },
   ".cm-content": { padding: "16px", caretColor: "currentColor" },
   ".cm-focused": { outline: "2px solid #6366f1", outlineOffset: "-2px" },
@@ -127,6 +129,7 @@ export function CodeMirrorEditor({
   onPasteImages,
   onDragOver,
   onDragLeave,
+  onContextMenuAt,
   toolbar,
   handleRef,
   onRegisterCaretInsert,
@@ -147,12 +150,14 @@ export function CodeMirrorEditor({
   const onPasteRef = useRef(onPasteImages);
   const onDragOverRef = useRef(onDragOver);
   const onDragLeaveRef = useRef(onDragLeave);
+  const onContextMenuRef = useRef(onContextMenuAt);
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
   onDropRef.current = onDropFiles;
   onPasteRef.current = onPasteImages;
   onDragOverRef.current = onDragOver;
   onDragLeaveRef.current = onDragLeave;
+  onContextMenuRef.current = onContextMenuAt;
 
   useImperativeHandle(
     handleRef,
@@ -224,6 +229,9 @@ export function CodeMirrorEditor({
         liveComp.current.of(livePreviewOptions ? livePreview(() => liveOptions.current ?? {}) : []),
         EditorView.lineWrapping,
         themeComp.current.of(theme === "dark" ? oneDark : lightTheme),
+        // The note font follows the appearance preference (set on :root), so the
+        // editor never needs a font prop of its own.
+        EditorView.theme({ ".cm-content": { fontFamily: "var(--font-note)" } }),
         readOnlyComp.current.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
         EditorView.domEventHandlers({
           keydown: (event: KeyboardEvent) => {
@@ -272,10 +280,19 @@ export function CodeMirrorEditor({
       event.preventDefault();
       onPasteRef.current(images);
     };
+    // Right-click inside the text: the owner decides whether to open its menu.
+    // An omitted handler keeps the native spelling/clipboard menu untouched.
+    const onContextMenu = (event: MouseEvent) => {
+      if (!onContextMenuRef.current) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onContextMenuRef.current(event.clientX, event.clientY);
+    };
     content.addEventListener("drop", onDrop);
     content.addEventListener("dragover", onDragOver);
     content.addEventListener("dragleave", onDragLeave);
     content.addEventListener("paste", onPaste);
+    content.addEventListener("contextmenu", onContextMenu);
 
     const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => created.requestMeasure()) : null;
     observer?.observe(host.current);
@@ -284,6 +301,7 @@ export function CodeMirrorEditor({
       content.removeEventListener("dragover", onDragOver);
       content.removeEventListener("dragleave", onDragLeave);
       content.removeEventListener("paste", onPaste);
+      content.removeEventListener("contextmenu", onContextMenu);
       observer?.disconnect();
       created.destroy();
       view.current = undefined;

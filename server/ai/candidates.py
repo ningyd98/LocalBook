@@ -7,6 +7,12 @@ must fall inside this returned set.
 
 Sources, in priority order:
 
+0. **M14 RAG hybrid retrieval** (``rag_chunks``) when a RAG stack is available:
+   chunk-level FTS + vector evidence fused by RRF, which is the only source that
+   can find a semantically similar note that shares no keywords. This is the
+   "Related Notes reuses EvidencePack" path (M14 §八) — the same retrieval that
+   grounds RAG answers narrows the M6 candidate set, so no note can be proposed
+   unless retrieval actually found it in the Vault;
 1. FTS5 (``index.fts_search``) when every query term is ASCII-tokenizable;
    otherwise the M3 substring path (``index.substring_search``) — mirroring
    SearchService's FTS-primary / substring-fallback split;
@@ -33,13 +39,21 @@ def _path_of(candidate: object) -> object:
     return getattr(candidate, "path", None)
 
 
-def reduce_candidates(index, path: str, *, limit: int = 20, query: str | None = None):
-    """Merge FTS/substring, link, and graph candidates for one note.
+def reduce_candidates(
+    index,
+    path: str,
+    *,
+    limit: int = 20,
+    query: str | None = None,
+    rag_hits=None,
+):
+    """Merge RAG, FTS/substring, link, and graph candidates for one note.
 
-    This function only consumes existing index read APIs (``entries``,
-    ``fts_search``, ``substring_search``, ``graph_snapshot``).  Rows are
-    bounded before any model call and every returned path must occur in the
-    index note set, preventing model-selected arbitrary filesystem paths.
+    Only existing read APIs are consumed (``entries``, ``fts_search``,
+    ``substring_search``, ``graph_snapshot``, and the optional M14 RAG chunk
+    hits). Rows are bounded before any model call and every returned path must
+    occur in the index note set, preventing model-selected arbitrary filesystem
+    paths — a hallucinated path can never become a candidate.
     """
     if limit <= 0:
         return []
@@ -66,6 +80,11 @@ def reduce_candidates(index, path: str, *, limit: int = 20, query: str | None = 
         if len(order) >= limit:
             return
         order.append(candidate_path)
+
+    # Highest priority: semantic + lexical evidence from the RAG chunk index
+    # (``RetrievalResult.path`` / ``VectorHit.path`` objects).
+    for hit in rag_hits or ():
+        add(hit)
 
     terms = query.split() if query else []
     if terms:

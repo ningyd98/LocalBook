@@ -68,13 +68,20 @@ def test_nested_env_overrides_ai_settings(monkeypatch: pytest.MonkeyPatch) -> No
         ({"request_timeout_seconds": 999}, "request_timeout_seconds"),
         ({"max_context_chars_per_note": 10}, "max_context_chars_per_note"),
         ({"max_context_chars_total": 50}, "max_context_chars_total"),
-        # Audit S4: provider is locked to the wired oMLX route.
-        ({"provider": "openai"}, "provider"),
+        # PLAN-PROVIDERS D6 relaxes the M6 "omlx only" lock: ``provider`` now
+        # follows the applied provider kind, so the closed set is what stays
+        # strict (an unknown kind is still rejected).
+        ({"provider": "anthropic"}, "provider"),
     ],
 )
 def test_ai_settings_bounds_are_strict(patch: dict[str, object], field: str) -> None:
     with pytest.raises(ValidationError):
         AISettings(**patch)
+
+
+def test_ai_settings_accepts_the_wired_provider_kinds() -> None:
+    for kind in ("omlx", "openai", "openai-compatible", "custom"):
+        assert AISettings(provider=kind).provider == kind
 
 
 def test_disabled_ai_flag_is_explicit() -> None:

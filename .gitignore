@@ -34,3 +34,6 @@ build/
 .idea/
 .vscode/
 *.swp
+
+# Agent tooling runtime state (not part of the project)
+.agent-teams/

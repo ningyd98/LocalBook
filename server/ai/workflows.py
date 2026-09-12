@@ -77,8 +77,22 @@ def _terms_for_query(title: str, tags: list[str], body: str, *, limit: int = 8) 
 
 
 class AIWorkflowService:
-    def __init__(self, settings, adapter: ModelAdapter, *, vault=None, index=None, registry=None):
+    def __init__(
+        self,
+        settings,
+        adapter: ModelAdapter,
+        *,
+        vault=None,
+        index=None,
+        rag=None,
+        registry=None,
+    ):
         self.settings, self.adapter, self.vault, self.index = settings, adapter, vault, index
+        # Optional M14 RAG stack. When present, ``related`` reuses the same
+        # chunk-level evidence retrieval that grounds RAG answers (M14 §八),
+        # so semantic neighbours are found without any model call; when absent
+        # the M4 FTS/substring + link/graph path is used unchanged.
+        self.rag = rag
         self.registry = registry or PromptRegistry()
         self.last_prompt_version: str | None = None
         self.last_model: str | None = None
@@ -244,11 +258,13 @@ class AIWorkflowService:
         title = getattr(entry, "title", None) or Path(request.note_path).stem
         tags = list(getattr(entry, "tags", None) or [])
         query = _terms_for_query(title, tags, current.text)
+        rag_hits = self._rag_candidates(query, exclude=request.note_path)
         candidates = reduce_candidates(
             self.index,
             request.note_path,
             limit=self.settings.max_context_notes - 1,
             query=query,
+            rag_hits=rag_hits,
         )
         if not candidates:
             registered = self._prompt("suggest_links")
@@ -277,6 +293,37 @@ class AIWorkflowService:
             }
         )
         return result
+
+    def _rag_candidates(self, query: str, *, exclude: str) -> list:
+        """Chunk-level evidence for ``related`` from the optional RAG stack.
+
+        Reuses :class:`HybridRetriever` (FTS + vector + RRF), so the candidate
+        set is derived from the Vault's own chunks — the same boundary the RAG
+        answer path uses. It never calls the chat model and never invents a
+        path; any failure (no RAG stack, no embeddings, empty query) simply
+        returns ``[]`` and the caller falls back to the M4 path.
+        """
+        stack = self.rag
+        if stack is None or not query.strip():
+            return []
+        limit = max(1, self.settings.max_context_notes - 1)
+        try:
+            outcome = stack.retriever.search(query, top_k=limit * 3)
+        except Exception:  # pragma: no cover - retrieval degrades, never raises
+            return []
+        seen: set[str] = set()
+        hits: list = []
+        for item in outcome.results:
+            path = getattr(item, "path", None)
+            if not isinstance(path, str) or not path or path == exclude:
+                continue
+            if path in seen:
+                continue
+            seen.add(path)
+            hits.append(item)
+            if len(hits) >= limit:
+                break
+        return hits
 
     async def extract_todos(self, request: ExtractTodosRequest) -> ExtractTodosResponse:
         source = self.builder.build([self._source(request.note_path)])

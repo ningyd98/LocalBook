@@ -33,7 +33,7 @@ const entries: VaultFileEntry[] = [
 ];
 
 function resetStore() {
-  useWorkspaceStore.setState({ tree: { entries: [], expandedPaths: [], status: "idle", error: null }, tabs: [], activePath: null, sessions: {}, theme: "light", splitRatio: 50 });
+  useWorkspaceStore.setState({ tree: { entries: [], expandedPaths: [], collapsedPaths: [], status: "idle", error: null }, tabs: [], activePath: null, sessions: {}, theme: "light", splitRatio: 50 });
 }
 
 /** Mock api per test; unset members fall back to sane defaults. */
@@ -391,43 +391,43 @@ describe("M2 B3 workspace UI matrix", () => {
     expect(useWorkspaceStore.getState().closeTab("a.md", () => false)).toBe(true);
   });
 
-  it("FileTree collapses/expands directories and opens files on click (controlled props)", async () => {
+  it("FileTree expands by default and collapses through the toggle (controlled props)", async () => {
     const open = vi.fn(); const toggle = vi.fn();
     const { rerender } = render(<FileTree entries={entries} expanded={["docs"]} onToggle={toggle} onOpen={open} />);
     // Expanded: descendants visible.
-    expect(screen.getByRole("button", { name: /child\.md/ })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /docs/ }));
+    expect(screen.getByRole("button", { name: "docs/child.md" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "docs" }));
     expect(toggle).toHaveBeenCalledWith("docs");
-    await userEvent.click(screen.getByRole("button", { name: /a\.md/ }));
+    await userEvent.click(screen.getByRole("button", { name: "a.md" }));
     expect(open).toHaveBeenCalledWith("a.md");
 
-    // Collapsed (store removed the expansion): descendants hidden, top level kept.
-    rerender(<FileTree entries={entries} expanded={[]} onToggle={toggle} onOpen={open} />);
-    expect(screen.queryByRole("button", { name: /child\.md/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /docs/ })).toBeInTheDocument();
+    // Explicitly collapsed: descendants hidden, top level kept.
+    rerender(<FileTree entries={entries} expanded={[]} collapsed={["docs"]} onToggle={toggle} onOpen={open} />);
+    expect(screen.queryByRole("button", { name: "docs/child.md" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "docs" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /a\.md/ })).toBeInTheDocument();
 
-    // Re-expanded: children return.
-    rerender(<FileTree entries={entries} expanded={["docs"]} onToggle={toggle} onOpen={open} />);
-    expect(screen.getByRole("button", { name: /child\.md/ })).toBeInTheDocument();
+    // Expanded again: children return.
+    rerender(<FileTree entries={entries} expanded={["docs"]} collapsed={[]} onToggle={toggle} onOpen={open} />);
+    expect(screen.getByRole("button", { name: "docs/child.md" })).toBeInTheDocument();
   });
 
   it("FileTree collapses/expands through the store and opens a file in the shell", async () => {
     render(<WorkspaceShell />);
-    // Tree loads asynchronously; docs row appears first (dirs first, docs collapsed).
-    const docsRow = await screen.findByRole("button", { name: /docs/ });
-    expect(screen.queryByRole("button", { name: /child\.md/ })).not.toBeInTheDocument();
+    // Tree loads asynchronously; a folder shows its contents until collapsed.
+    const docsRow = await screen.findByRole("button", { name: "docs" });
+    expect(await screen.findByRole("button", { name: "docs/child.md" })).toBeInTheDocument();
 
-    await userEvent.click(docsRow); // expand -> descendants appear
-    expect(await screen.findByRole("button", { name: /child\.md/ })).toBeInTheDocument();
-    expect(useWorkspaceStore.getState().tree.expandedPaths).toContain("docs");
+    await userEvent.click(docsRow); // collapse -> descendants hidden again
+    await waitFor(() => expect(screen.queryByRole("button", { name: "docs/child.md" })).not.toBeInTheDocument());
+    expect(useWorkspaceStore.getState().tree.collapsedPaths).toContain("docs");
 
-    await userEvent.click(screen.getByRole("button", { name: /docs/ })); // collapse -> hidden again
-    await waitFor(() => expect(screen.queryByRole("button", { name: /child\.md/ })).not.toBeInTheDocument());
-    expect(useWorkspaceStore.getState().tree.expandedPaths).not.toContain("docs");
+    await userEvent.click(screen.getByRole("button", { name: "docs" })); // expand -> descendants appear
+    expect(await screen.findByRole("button", { name: "docs/child.md" })).toBeInTheDocument();
+    expect(useWorkspaceStore.getState().tree.collapsedPaths).not.toContain("docs");
 
     // Clicking a file opens its editor session.
-    await userEvent.click(screen.getByRole("button", { name: /a\.md/ }));
+    await userEvent.click(screen.getByRole("button", { name: "a.md" }));
     expect(await screen.findByRole("textbox", { name: "Source editor for a.md" })).toBeInTheDocument();
   });
 

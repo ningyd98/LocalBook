@@ -67,6 +67,73 @@ function decodeReferenceSegment(segment: string): string {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Note hierarchy (nested documents)
+// ---------------------------------------------------------------------------
+/**
+ * Basename of `path` without a Markdown extension (`notes/A.md` → `A`,
+ * `assets/pic.png` → `pic.png`, `A` → `A`).
+ */
+export function noteStem(path: string): string {
+  const name = path.split("/").at(-1) ?? path;
+  return name.replace(/\.(md|markdown)$/i, "");
+}
+
+/**
+ * Vault directory that holds the **child documents** of the note at
+ * `notePath`: a sibling directory sharing the note's basename
+ * (`notes/A.md` → `notes/A`, root `A.md` → `A`).
+ *
+ * The nesting model is deliberately folder-based, so the hierarchy stays plain
+ * Markdown plus directories and every other file tool can see it. Non-note
+ * paths (attachments) use their literal basename.
+ */
+export function noteChildDirectory(notePath: string): string {
+  const segments = notePath.split("/");
+  const last = segments.length - 1;
+  const name = segments[last] ?? notePath;
+  const stem = name.endsWith(".markdown") ? name.slice(0, -9) : name.endsWith(".md") ? name.slice(0, -3) : name;
+  const folder = segments.slice(0, last);
+  folder.push(stem);
+  return folder.join("/");
+}
+
+/**
+ * Ancestor notes of `notePath`, outermost first, derived from the sibling
+ * directory convention: for `A/B/C.md` a directory `A/B/` means the note `A/B.md`
+ * (when that note exists in `known`) is its parent, and a directory `A/` means
+ * `A.md` (when it exists) is the grandparent. "Does it exist" is answered by
+ * `known` because only the tree view holds the file listing; a gap in the
+ * chain simply ends the ancestry.
+ */
+export function noteAncestorPaths(notePath: string, known: ReadonlySet<string>): string[] {
+  const chain: string[] = [];
+  const segments = notePath.split("/");
+  for (let depth = segments.length - 1; depth >= 1; depth -= 1) {
+    const directory = segments.slice(0, depth);
+    const candidate = `${directory.join("/")}.md`;
+    if (!known.has(candidate)) break;
+    chain.unshift(candidate);
+    // Walk one level up: `A/B.md` reads its own parent from the directory `A/`.
+    segments.length = depth;
+  }
+  return chain;
+}
+
+/**
+ * A non-colliding `base` name (`unfiled.md`, `unfiled 2.md`, …) for `existing`.
+ * Paths are compared by basename, which is the scope a name has to be unique
+ * in, so callers can pass whole Vault paths and still get a usable suggestion.
+ */
+export function suggestNoteName(existing: readonly string[], base: string): string {
+  const taken = new Set(existing.map(path => path.split("/").at(-1) ?? path));
+  for (let index = 1; index < 1000; index += 1) {
+    const candidate = index === 1 ? `${base}.md` : `${base} ${index}.md`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  return `${base} ${Date.now()}.md`;
+}
+
 /**
  * Vault-root-relative directory of `notePath` (`""` for a root-level note).
  * This is the value a toolbar/drop/paste upload must send as
@@ -278,6 +345,33 @@ export function markTaskCheckboxes(source: string): string {
   return out + source.slice(cursor);
 }
 
+// ---------------------------------------------------------------------------
+// Trash / recycle bin (server source of truth: server/vault/trash_schemas.py)
+// ---------------------------------------------------------------------------
+/** One item held by the trash until the retention window expires. */
+export interface TrashEntryDTO {
+  id: string;
+  /** Where the item came from; restore puts it back exactly there. */
+  original_path: string;
+  name: string;
+  kind: "file" | "directory";
+  byte_length: number;
+  file_count: number;
+  deleted_at: string;
+  expires_at: string;
+  days_remaining: number;
+}
+export interface TrashListResponse {
+  entries: TrashEntryDTO[];
+  count: number;
+  total_bytes: number;
+  retention_days: number;
+  generated_at: string;
+}
+/** ``expected_sha256`` is required for files and ignored for folders. */
+export interface TrashRequest { path: string; expected_sha256?: string | null; }
+export interface TrashRestoreRequest { rename_if_occupied?: boolean; }
+
 export type VaultErrorCode = "vault_not_configured" | "vault_unavailable" | "path_traversal" | "symlink_escape" | "not_found" | "already_exists" | "file_conflict" | "expected_hash_required" | "invalid_request" | "file_too_large" | "not_a_file" | "not_a_directory" | "atomic_write_failed" | "watcher_unavailable" | "index_unavailable" | "internal_error" | string;
 export interface VaultErrorBody { error: { code: VaultErrorCode; message: string; path: string | null }; }
 export type FrontmatterStatus = "none" | "ok" | "parse_error" | "unreadable";
@@ -346,3 +440,25 @@ export interface SchedulerRunDTO { run_id: string; task: SchedulerTaskId; status
 export interface SchedulerRunsPageDTO { items: SchedulerRunDTO[]; total: number; limit: number; offset: number; }
 export interface SchedulerRunRequest { confirm?: boolean; auto_level2?: boolean; scope?: { paths: string[]; max_files?: number; max_chars?: number } | null; }
 export type SchedulerRecoveryAction = "diagnose" | "rollback_if_safe" | "retry_preview";
+
+// ---------------------------------------------------------------------------
+// M14 RAG DTO mirror (server source of truth: server/rag/api_schemas.py)
+// ---------------------------------------------------------------------------
+export type RagIndexStatusKind = "empty" | "ready" | "pending" | "failed" | "outdated";
+export interface RagSource { id: string; path: string; heading?: string | null; heading_path?: string | null; start_line: number; end_line: number; excerpt: string; score?: number | null; }
+export interface RagSearchHit { /** Server-derived visual binding; optional for pre-visual responses. */ rank?: number; source_id?: string; chunk_id: string; path: string; heading?: string | null; heading_path?: string | null; excerpt: string; score: number; keyword_rank?: number | null; vector_rank?: number | null; link_rank?: number | null; rerank_score?: number | null; start_line: number; end_line: number; }
+export interface RagRetrievalStats { fts_candidates: number; vector_candidates: number; /** Candidates contributed by optional graph/link retrieval. */ link_candidates?: number; fused_candidates: number; reranked: boolean; context_chunks: number; context_tokens: number; retrieval_ms: number; embedding_ms: number; rerank_ms: number; generation_ms: number; degraded: string[]; retrieval_debug?: Record<string, unknown> | null; }
+export interface RagQueryRequest { query: string; top_k?: number | null; rerank?: boolean | null; debug?: boolean; }
+export interface RagEvidenceSummary { source_count: number; paths?: string[]; context_tokens?: number; candidate_count?: number; truncated?: boolean; grounded?: boolean; degraded?: string[]; }
+export interface RagQueryResponse { query: string; answer: string; sources: RagSource[]; /** Server-derived evidence metadata; absent on older servers. */ evidence?: RagEvidenceSummary; retrieval_stats: RagRetrievalStats; model: string; prompt_version: string; degraded: string[]; invalid_citations: string[]; generated_at: string; }
+export interface RagSearchRequest { query: string; top_k?: number; }
+export interface RagSearchResponse { query: string; results: RagSearchHit[]; stats: RagRetrievalStats; degraded: string[]; generated_at: string; }
+export interface RagIndexStatusResponse { enabled: boolean; status: RagIndexStatusKind; embedding_provider: string; embedding_model: string; embedding_dimension: number; embedding_version: string; embedding_degraded: boolean; vector_store: string; vector_kernel: string; indexed_notes: number; chunks: number; embedded_chunks: number; pending: number; failed: number; last_indexed: string | null; chunk_target_tokens: number; chunk_max_tokens: number; message: string; /**
+ * Optional roadmap-③ link/graph path state, relayed verbatim from the retriever:
+ * `""` when no link path is wired, `"enabled"` when it is wired and reachable,
+ * otherwise the degraded reason (e.g. `"link_unavailable"`). Optional so a
+ * pre-③ server (which never sends it) still deserializes cleanly; an empty or
+ * absent value renders as "nothing to report" — never as a fabricated state.
+ */
+link_retrieval?: string; }
+export interface RagIndexRebuildResponse { indexed_documents: number; indexed_chunks: number; embedded_chunks: number; skipped_documents: number; failed_documents: number; duration_ms: number; ready: boolean; degraded: boolean; degraded_reason?: string | null; status: RagIndexStatusResponse; }

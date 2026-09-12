@@ -217,6 +217,17 @@ class DerivedIndexService:
     def db_path(self) -> Path | None:
         return self._db_path
 
+    @property
+    def database(self) -> IndexDatabase | None:
+        """The open derived database (shared with additive derived layers).
+
+        M14's RAG tables live in this same file, so the RAG store reuses this
+        handle instead of opening a second connection to ``index.db``. Returns
+        ``None`` while the database is closed/unavailable; the caller degrades.
+        """
+        with self._lock:
+            return self._db
+
     def close(self) -> None:
         """Close the SQLite connection (lifecycle shutdown)."""
         with self._lock:

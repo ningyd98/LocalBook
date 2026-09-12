@@ -109,11 +109,16 @@
 | `GET /api/v1/vault/file?path=` | 读取：`content_base64` + `byte_length` + `sha256` + `content_type` |
 | `POST /api/v1/vault/file` | create（201；重复 409；body 为空 = 空文件） |
 | `PATCH /api/v1/vault/file` | update：必须带 `expected_sha256` |
-| `DELETE /api/v1/vault/file` | delete：必须带 `expected_sha256` |
+| `DELETE /api/v1/vault/file` | delete：必须带 `expected_sha256`（缺失 → 400 `expected_hash_required`）；只接受普通文件，目录 → 400 `not_a_file` |
 | `POST /api/v1/vault/file/move` | move/rename：必须带源 `expected_sha256` |
 | `POST /api/v1/vault/attachments` | 用户直传附件（JSON，≤10 MiB），201 |
 | `POST /api/v1/vault/attachments/multipart` | 用户直传附件（multipart 流式，>10 MiB），201 |
 | `GET /api/v1/vault/resource?path=` | 只读原始 bytes（图片预览/附件下载），非 JSON |
+| `GET /api/v1/trash` | 回收站列表（含 `retention_days`、每项 `days_remaining`） |
+| `POST /api/v1/trash` | 软删除：文件需 `expected_sha256`，目录按整体移动，201 |
+| `POST /api/v1/trash/{id}/restore` | 恢复（`rename_if_occupied` 可避开占用路径） |
+| `DELETE /api/v1/trash/{id}` | 永久删除单项 |
+| `DELETE /api/v1/trash` | 清空回收站（返回清空后的列表） |
 
 ### 8.1 附件上传与资源读取（附件计划 v1.1 已实现）
 
@@ -173,6 +178,46 @@ root-relative POSIX 目录（空串表示 Vault 根），由前端按入口决�
   所在目录用 `POST /vault/file` 创建（`[[子目录/名]]` 用
   `POST /vault/directory` 逐级补建缺失层级）。`..`/绝对路径/URL/空名一律拒绝，
   不产生任何文件；正文引用语法（`[[...]]`）与索引/Graph 解析器未改动。
+
+### 8.3 回收站与软删除（1.0.0 后新增）
+
+- **位置**：`<root>/.localnote/trash/<uuid>/<原名>`，索引为 `.localnote/trash/index.json`。
+  移动（同文件系统 rename）而非复制，不产生第二份正文；整目录一次移动。
+- **为何不走公开 API**：`.localnote` 被 `is_reserved_derived_path` 统一拒绝，所以软删除必须是
+  服务内部的一次受信移动。源路径仍走完整校验（词法、保留目录、逐级 symlink、containment），
+  目标路径由服务生成（客户端只能给「待删的相对路径」与「回收站 id」）。
+- **保留期**：默认 30 天（`vault.trash_retention_days`，1–3650）。过期条目在任意一次回收站
+  操作（列表/软删除/恢复）时被清理，删除的是回收站里的载荷与索引记录，不触碰 Vault 正文。
+- **恢复**：放回原相对路径；缺失的上级目录会被逐级重建；目标已存在 → 409
+  `already_exists`，带 `rename_if_occupied` 时改为 `<原名> (restored)`（重名再加序号）。
+- **派生语义**：`index.json` 或整个 `.localnote/` 被删除只会丢记账，正文与回收站载荷都不受影响
+  （载荷本身在 Vault 树之外）。
+
+### 8.4 嵌套文档的分级约定（纯文件夹，无新语法）
+
+「新建子文档」把正文写进**同级同名目录**，前端据此渲染分级树；后端没有父子字段，
+正文/frontmatter 不被写入任何层级标记，服务端不新增端点（仍只用 `POST
+/vault/directory` 逐级补建 + `POST /vault/file` 创建）：
+
+| 上层文档 | 子文档落点 | 说明 |
+|---|---|---|
+| `Notes/A.md` | `Notes/A/名.md` | 目录名 = 去掉扩展名的笔记名，位于同一目录 |
+| `Notes/A/index.md` | `Notes/A/名.md` | 目录笔记代表它所在的目录本身 |
+| `Notes/A/B.md` | `Notes/A/B/名.md` | 递归适用，可无限分级 |
+
+由此推导的渲染规则（`packages/workspace/src/hierarchy.ts`）：
+
+- `Notes/A/` 只在同级存在 `Notes/A.md` 时挂到该笔记下；普通目录（如 `docs/` 且无
+  `docs.md`）保持独立目录行，不会被吞并。
+- `notes/A/index.md` 代表 `notes/A/` 这一行，因此目录不会重复出现。
+- 「收缩」只记录被折叠的路径；文档层级是**所有者链**（`Notes/A/B.md` → `Notes/A.md`），
+  折叠任意一层会隐藏其内部所有子文档，与路径前缀链无关。
+- 打开笔记会清除它与其上层目录的折叠标记，使当前笔记在树中可见。
+- **正文引用**：新建子文档时，若上层笔记已打开且没有未保存改动/冲突/保存错误，在其正文末尾
+  追加一段 `[[子文档名]]`（走既有 `updateContent` + 自动保存通道）；不满足条件时该笔记的
+  bytes 完全不变，也不把它切到前台。重命名子文档会用它移动前的所有者链定位上层笔记并改写
+  `[[旧名]]` → `[[新名]]`（保留别名/`#小节`/`^块引用`/`!嵌入` 与目录前缀；同一 stem 在全库
+  出现多次时视为歧义，不改写）。嵌套层级本身仍**不写**任何 frontmatter 字段。
 
 ## 9. M1 现状声明（边界）
 

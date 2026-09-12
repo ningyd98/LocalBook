@@ -7,7 +7,7 @@ import { setVaultSession } from "../../apps/web/src/api/client";
 import type { AIStatusResponse } from "../../apps/web/src/api/types";
 import { useWorkspaceStore } from "../../packages/workspace/src";
 
-const settings = {revision:1,vault_session_id:"workspace-a",changing:false,version:"0.2.0",vault:{root:"/notes",status:"ready"},ai:{enabled:true,base_url:null,chat_model:"auto"}};
+const settings = {revision:1,vault_session_id:"workspace-a",changing:false,version:"0.2.0",vault:{root:"/notes",status:"ready"},ai:{enabled:true,base_url:null,chat_model:"auto",active_profile_id:"default",profiles:[]}};
 const ok = (payload: unknown) => new Response(JSON.stringify(payload), {status:200});
 const failure = (status: number, code: string) => new Response(JSON.stringify({error:{code,message:code,path:null}}), {status});
 function aiStatus(overrides: Partial<AIStatusResponse> = {}): AIStatusResponse {
@@ -18,6 +18,9 @@ function install(ai: AIStatusResponse = aiStatus(), vault: () => Response = () =
     const url=String(input);
     if(url.endsWith("/health")) return ok({status:"ok"});
     if(url.endsWith("/ai/status")) return ok(ai);
+    // PLAN-PROVIDERS: the provider switch reads this path; an empty library keeps
+    // the status bar free of a provider selector.
+    if(url.endsWith("/settings/ai/profiles")) return ok({revision:1,active_profile_id:"default",profiles:[]});
     if(url.endsWith("/settings")) return ok(settings);
     if(url.includes("/vault/files")) return vault();
     return failure(404,"not_found");

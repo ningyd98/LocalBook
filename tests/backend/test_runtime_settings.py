@@ -144,7 +144,15 @@ def test_ai_apply_replaces_all_consumers_without_changing_vault(workspace):
     old_session, old_agent = runtime.session_id, runtime.agent
     response = update(client)
     assert response.status_code == 200, response.text
-    assert response.json()["ai"] == {**AI, "base_url": AI["base_url"].rstrip("/"), "api_key_set": False}
+    # PLAN-PROVIDERS adds the applied-profile pointer and the provider library to
+    # the snapshot; every M6 field keeps its previous meaning and shape.
+    snapshot_ai = response.json()["ai"]
+    assert snapshot_ai["active_profile_id"] == "default"
+    assert [entry["id"] for entry in snapshot_ai["profiles"]] == ["default"]
+    assert {k: v for k, v in snapshot_ai.items()
+            if k not in {"active_profile_id", "profiles"}} == {
+        **AI, "base_url": AI["base_url"].rstrip("/"), "api_key_set": False,
+    }
     # The stored key is write-only: the snapshot reports only whether one exists.
     assert "api_key" not in response.json()["ai"]
     assert runtime.agent is not old_agent and runtime.scheduler.agent_service is runtime.agent

@@ -25,10 +25,16 @@ const messages: Record<string, string> = {
   ai_disabled: "AI 已关闭，可在设置中启用。",
   ai_not_configured: "尚未配置 AI 服务，请前往设置。",
   ai_model_not_found: "未找到可用的对话模型，请检查模型 ID。",
+  // AI 供应商档案（PLAN-PROVIDERS）：稳定错误码，不拼接服务端 message
+  ai_profile_not_found: "该 AI 供应商档案已不存在，请重新打开设置载入最新配置。",
+  ai_profile_active: "正在使用的供应商无法删除，请先切换到其他供应商。",
+  ai_profile_last: "至少需要保留一个 AI 供应商档案。",
+  ai_profiles_full: "供应商档案数量已达上限（30 个），请先删除不再使用的档案。",
   network_error: "连接中断，请检查本地服务后重试。",
   not_found: "未找到该文件，可能已被移动或删除。",
   // 附件上传：错误码来自服务端稳定契约，不拼接服务端 message，也不展示绝对路径
-  invalid_request: "请求无效，请检查文件名或目标目录。",
+  // 通用 400/422：这句话要能描述设置类请求，不能只提附件（附件有自己的错误码）
+  invalid_request: "请求内容无效，请检查填写的字段后重试。",
   invalid_attachment_name: "文件名无效，请重命名后重试。",
   file_too_large: "文件超过大小限制，无法上传。",
   already_exists: "同名文件已存在，未覆盖原文件。",
@@ -37,7 +43,28 @@ const messages: Record<string, string> = {
   invalid_name: "文件名无效，请检查后重试。",
 };
 export function localizedError(error: unknown, locale: string): string {
-  const value = error as { code?: string; message?: string } | null;
-  if (locale === "en-US") return value?.message ?? "Operation failed. Please retry.";
-  return messages[value?.code ?? ""] ?? (value?.message && /[\u4e00-\u9fff]/.test(value.message) ? value.message : "操作未完成，请检查连接或稍后重试。");
+  const value = error as { code?: string; message?: string; status?: number; endpoint?: string } | null;
+  // Locale behaviour is unchanged on purpose: English keeps the server message
+  // (which the API writes in English) and Chinese prefers the curated map. New
+  // provider codes are mapped below so zh-CN never shows a raw error code.
+  const detail = diagnostic(value);
+  if (locale === "en-US") return value?.message ? `${value.message}${detail}` : `Operation failed. Please retry.${detail}`;
+  const curated = messages[value?.code ?? ""];
+  if (curated) return curated;
+  if (value?.message && /[\u4e00-\u9fff]/.test(value.message)) return value.message;
+  // No curated code and no server sentence: say what actually failed instead of
+  // a dead-end "please retry" — an unknown endpoint (HTTP 404) is the most
+  // common real cause when the backend is older than the page.
+  return `操作未完成：${value?.message || "请求失败"}${detail}`;
+}
+
+/**
+ * `（HTTP 404 · /settings/ai/profiles）`-style suffix, or an empty string when
+ * there is nothing concrete to add. Never includes a vault path or a secret.
+ */
+function diagnostic(value: { status?: number; endpoint?: string } | null): string {
+  const parts: string[] = [];
+  if (typeof value?.status === "number" && value.status > 0) parts.push(`HTTP ${value.status}`);
+  if (value?.endpoint) parts.push(value.endpoint);
+  return parts.length ? `（${parts.join(" · ")}）` : "";
 }

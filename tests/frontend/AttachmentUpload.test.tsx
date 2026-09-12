@@ -74,7 +74,7 @@ function configureApi(overrides: Partial<WorkspaceApi> = {}) {
 
 function resetStore() {
   useWorkspaceStore.getState().resetVault();
-  useWorkspaceStore.setState({ ...preferenceDefaults, tree: { entries: [], expandedPaths: [], status: "idle", error: null }, tabs: [], activePath: null, sessions: {} });
+  useWorkspaceStore.setState({ ...preferenceDefaults, tree: { entries: [], expandedPaths: [], collapsedPaths: [], status: "idle", error: null }, tabs: [], activePath: null, sessions: {} });
 }
 
 async function openNote(path = "notes/a.md") {
@@ -244,9 +244,9 @@ describe("file tree entry points (ATT-15)", () => {
     const onOpen = vi.fn();
     const onOpenAttachment = vi.fn();
     render(<FileTree entries={ENTRIES} expanded={["notes"]} activePath={null} onToggle={vi.fn()} onOpen={onOpen} onOpenAttachment={onOpenAttachment}/>);
-    await userEvent.click(screen.getByRole("button", { name: "a.md" }));
+    await userEvent.click(screen.getByRole("button", { name: "notes/a.md" }));
     expect(onOpen).toHaveBeenCalledWith("notes/a.md");
-    const attachment = screen.getByRole("button", { name: "photo.png" });
+    const attachment = screen.getByRole("button", { name: "notes/photo.png" });
     expect(attachment).toBeEnabled();
     await userEvent.click(attachment);
     expect(onOpenAttachment).toHaveBeenCalledWith("notes/photo.png");
@@ -354,7 +354,7 @@ describe("shell integration (ATT-12/ATT-13)", () => {
     configureApi();
     await openNote("notes/a.md");
     render(<WorkspaceShell/>);
-    await userEvent.click(await screen.findByRole("button", { name: "photo.png" }));
+    await userEvent.click(await screen.findByRole("button", { name: "notes/photo.png" }));
     const viewer = await screen.findByLabelText("Attachment preview");
     expect(viewer.querySelector("img")).toHaveAttribute("src", vaultResourceUrl("notes/photo.png"));
     expect(screen.getByRole("tab", { name: /a\.md/i })).toBeInTheDocument();

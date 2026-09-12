@@ -26,7 +26,7 @@ const response: SearchResponse = {
 
 function resetStore() {
   useWorkspaceStore.setState({
-    tree: { entries: [], expandedPaths: [], status: "idle", error: null },
+    tree: { entries: [], expandedPaths: [], collapsedPaths: [], status: "idle", error: null },
     tabs: [], activePath: null, sessions: {},
     relations: { status: "idle", path: null, outgoing: null, backlinks: null, brokenCount: 0, error: null },
     search: { status: "idle", query: "", response: null, error: null },

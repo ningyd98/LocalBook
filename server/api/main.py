@@ -13,11 +13,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from .. import __version__
 from ..ai.errors import AIError
 from ..config import Settings
 from ..policies.errors import M7Error
 from ..runtime import SESSION_HEADER, ConfigRepository, Runtime, SettingsError
 from ..scheduler.errors import SchedulerError
+from ..rag.errors import RagError, RagInvalidRequest
 from ..vault.errors import VaultError, VaultErrorCode
 from .routes import ai as ai_routes
 from .routes import graph as graph_routes
@@ -27,9 +29,11 @@ from .routes import index as index_routes
 from .routes import jobs as jobs_routes
 from .routes import links as links_routes
 from .routes import metadata as metadata_routes
+from .routes import rag as rag_routes
 from .routes import scheduler as scheduler_routes
 from .routes import search as search_routes
 from .routes import settings as settings_routes
+from .routes import trash as trash_routes
 from .routes import vault as vault_routes
 
 logger = logging.getLogger("localnote.api")
@@ -128,7 +132,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="LocalNote Server",
-        version="1.0.0",
+        version=__version__,
         description=(
             "Markdown-first local note server (M1 Vault core + M3 "
             "metadata/links/search read layer on the M4 SQLite derived index)."
@@ -152,6 +156,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_routes.router)
     app.include_router(ai_routes.router)
     app.include_router(vault_routes.router)
+    app.include_router(trash_routes.router)
     app.include_router(metadata_routes.router)
     app.include_router(links_routes.router)
     app.include_router(search_routes.router)
@@ -160,6 +165,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(jobs_routes.router)
     app.include_router(history_routes.router)
     app.include_router(scheduler_routes.router)
+    app.include_router(rag_routes.router)
     app.include_router(settings_routes.router)
 
     @app.middleware("http")
@@ -189,6 +195,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(SettingsError)
     async def settings_error_handler(request: Request, exc: SettingsError) -> JSONResponse:
         return JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message, "path": None}})
+
+    @app.exception_handler(RagError)
+    async def rag_error_handler(request: Request, exc: RagError) -> JSONResponse:
+        """M14 RAG degradation: a fixed code/message, never a stack trace.
+
+        RAG is an optional derived layer, so its failures are reported as a
+        Service-Unavailable-style error while every other endpoint keeps
+        working (the client can fall back to lexical search or the editor).
+        """
+        logger.info(
+            "rag error method=%s path=%s code=%s",
+            request.method,
+            request.url.path,
+            exc.code,
+        )
+        return JSONResponse(
+            status_code=getattr(exc, "status_code", 503),
+            content={
+                "error": {"code": exc.code, "message": exc.message, "path": None},
+                "meta": {},
+            },
+        )
 
     @app.exception_handler(M7Error)
     async def m7_error_handler(request: Request, exc: M7Error) -> JSONResponse:

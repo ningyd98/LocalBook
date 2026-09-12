@@ -26,13 +26,15 @@ export interface EditorPaneProps {
   onRegisterCaretInsert?: (handler: ((markdown: string) => boolean) | null) => void;
   /** Non-null enables the single-column WYSIWYG rendering. */
   livePreview?: LivePreviewOptions | null;
+  /** Right-click on the editing surface (pointer position for a context menu). */
+  onContextMenuAt?: (path: string, x: number, y: number) => void;
 }
 
 /**
  * Editor surface with the attachment entry points (ATT-12): toolbar file
  * picker, drag & drop onto the editor DOM and clipboard image paste.
  */
-export function EditorPane({ session, theme, onChange, onSave, readOnly = false, onUploadFiles, attachmentBusy = false, attachmentHint, onRegisterCaretInsert, livePreview }: EditorPaneProps) {
+export function EditorPane({ session, theme, onChange, onSave, readOnly = false, onUploadFiles, attachmentBusy = false, attachmentHint, onRegisterCaretInsert, livePreview, onContextMenuAt }: EditorPaneProps) {
   const { t, tr } = useI18n();
   const handle = useRef<CodeMirrorEditorHandle>(null);
   const path = session.path;
@@ -57,6 +59,7 @@ export function EditorPane({ session, theme, onChange, onSave, readOnly = false,
     ariaLabel={tr(`源码编辑器 ${session.path}`, `Source editor for ${session.path}`)}
     onDropFiles={disabled ? undefined : (files) => onUploadFiles?.(files, "editor-drop")}
     onPasteImages={disabled ? undefined : (files) => onUploadFiles?.(files.map(renamePasted), "paste")}
+    onContextMenuAt={onContextMenuAt ? (x, y) => onContextMenuAt(path, x, y) : undefined}
     toolbar={<>
       <HeadingToolbar onHeading={(level) => handle.current?.setHeading(level)} disabled={readOnly}/>
       <AttachmentToolbar onFiles={(files) => onUploadFiles?.(files, "toolbar")} busy={attachmentBusy} disabled={disabled} hint={attachmentHint}/>

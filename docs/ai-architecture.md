@@ -197,3 +197,31 @@ M6 已实现六个只读 REST workflow（`chat`、`summarize`、`tags`、`relate
   不影响手动 job、health 与其它 API。
 - Scheduler 本身不构造 prompt、不调用 adapter、不保存任何模型输出副本
   （输出只进入 M7 的 derived History 记录）。
+
+## 12. 多供应商档案（PLAN-PROVIDERS，已实现）
+
+- **一份配置、两个视图**：`server/config.py` 的 `AISettings` 既保留 M6 以来的
+  扁平字段（`base_url` / `api_key` / `chat_model` / 超时 / 温度 / 最大输出），
+  也新增 `profiles: list[ProviderProfile]` 与 `active_profile_id`。扁平字段是
+  **当前生效配置**（所有 AI 消费者只读它），档案是**已保存的供应商库**；激活
+  档案即把档案投影到扁平字段，因此 `AIStatusService`、`AIWorkflowService`、
+  `AgentJobService` 的实现无需知道多供应商存在。
+- **惰性物化**：磁盘上 `profiles` 为空时不会自动写入档案；只有用户显式新增/
+  编辑档案才会持久化 `profiles` + `active_profile_id`（旧配置文件字节形状不变）。
+  快照始终展示一行由扁平字段合成的 “default” 档案（`source: "default"`），
+  因此界面从第一天起就有可切换的一行。
+- **`provider` 语义放宽**（D6）：M6 审计把 `AISettings.provider` 锁为
+  `Literal["omlx"]`；多供应商要求它跟随激活档案的 `kind`，故改为封闭集合
+  `omlx | openai | openai-compatible | custom`（未知 kind 仍被拒绝）。
+- **HTTP 边界**：`/settings/ai/profiles`（GET/POST）、`/activate`、`/delete`、
+  `/test` 全部走 `Runtime.transition`（revision 冲突 409、与 Vault 切换/后台任务
+  互斥、失败保留旧设置并回滚调度器）。密钥写入沿用 `PATCH /settings` 语义：
+  省略/`null` = 保留，`""` = 清除，其余 = 覆盖；任何响应只回显 `api_key_set`。
+- **状态可观测**：`GET /ai/status` 增加 `active_profile_id` / `active_profile_name`
+  / `active_profile_kind`；`GET /settings` 的 `ai` 增加 `active_profile_id` 与
+  `profiles[]`（每项含 `is_active` / `builtin` / `source` / `api_key_set`）。
+- **认证错误分类**：OpenAI 兼容适配器把 401/403 映射为 `auth_error`（原先只有
+  404 有专门分类），使“密钥错误/缺失”与“服务不可达”在界面上可区分。
+- **前端**：设置 →「AI 配置」内提供档案列表 + 预置模板 + 编辑表单 + 只探测的
+  “测试连接”；AI 面板头部与状态栏各有一个快捷切换下拉，切换后返回完整快照，
+  由 shell 统一回填（无需重载页面）。
