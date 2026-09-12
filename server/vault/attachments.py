@@ -6,7 +6,7 @@ turn an untrusted display name plus an already validated root-relative target
 directory into a safe, predictable ``<target directory>/<safe basename>``
 landing path.
 
-Design notes (PLAN-ATTACHMENTS.md v1.1):
+Design notes:
 
 * There is no fixed ``attachments/YYYY-MM/`` layout.  The caller decides the
   target directory; this module only validates/joins it.

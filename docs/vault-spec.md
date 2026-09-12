@@ -1,7 +1,7 @@
 # LocalNote Vault 兼容性规范（M1 实现状态）
 
 > 本文档是 **规范/契约 + M1 实现状态**。Phase 0 只声明了约束；M1 把第 2–5 节
-> 落地为可运行的 `VaultService` 与 REST API（见 `PLAN-M1.md`）。任何未来实现
+> 落地为可运行的 `VaultService` 与 REST API（见 M1 阶段计划）。任何未来实现
 > 不得破坏这些保证。原文（Markdown + 附件）永远是唯一事实源。
 
 ## 1. 目标

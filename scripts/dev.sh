@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # LocalNote Server Phase 0 — one-command dev launcher.
 #
-# Behaviour (PLAN.md 4.2/4.3/6.4):
+# Behaviour:
 #   * checks python3 >= 3.12, Node >=22 <23 and pnpm (never silently falls
 #     back to npm);
 #   * installs Python deps via `uv sync --dev` (or instructs a manual venv when

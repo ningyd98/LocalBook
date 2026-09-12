@@ -426,7 +426,7 @@ def format_report(reports: dict[str, EvaluationReport]) -> str:
     return "\n".join(lines)
 
 
-# Regression floors. Deliberately below the measured values (see M14-REPORT.md):
+# Regression floors. Deliberately below the measured values (see CHANGELOG M14):
 # they exist to catch a real quality drop, not to certify an exact score. Keep
 # them in sync with tests/rag/test_eval.py.
 #

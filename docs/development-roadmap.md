@@ -1,9 +1,5 @@
 # LocalNote 开发路线图（M0–M13）
 
-> **说明**：正文中提到的逐里程碑计划文档（`PLAN.md` / `PLAN-M*.md` /
-> `PLAN-ATTACHMENTS.md` 等）属于内部过程文档，不随仓库发布；保留提及仅为
-> 记录当时的实施依据。
->
 > 本文档给出各里程碑的入口、目标、依赖、验收门槛，以及**不可提前实现**
 > 列表。当前阶段：**M9–M12 实现完成**（M9 用户直传附件已通过独立审计；
 > M10 文件重命名、M11 从 wikilink 创建嵌套笔记、M12 单栏实时预览为本轮
@@ -38,11 +34,11 @@ M7 依赖 M6 与 History；M8 依赖 M7。
   ai-architecture 文档。
 - 目录骨架：占位包与占位后端目录必须标注 Phase 0 placeholder。
 
-验收：PLAN.md 第 1.2 节全部完成；M1+ 禁止项未实现。
+验收：M1 阶段计划全部完成；M1+ 禁止项未实现。
 
 ## M1 — Vault 安全读写（已完成）
 
-实施依据：`PLAN-M1.md`（本仓库已提交，M1 唯一实施依据）。
+实施依据：M1 阶段计划（内部文档，不随仓库发布）。
 
 完成内容（对应 M1-01…M1-12）：
 
@@ -73,7 +69,7 @@ M7 依赖 M6 与 History；M8 依赖 M7。
 
 ## M3 — Metadata / Properties / Links / 关键词搜索（开发完成，待独立审计）
 
-- 实施依据：`PLAN-M3.md`（本仓库已提交，M3 唯一实施依据）。
+- 实施依据：M3 阶段计划（内部文档，不随仓库发布）。
 - 已完成内容（对应 M3-01…M3-13）：
   1. `server/markdown/frontmatter.py` 只读 frontmatter 解析（BOM/CRLF、
      `---` 首行分隔、`yaml.safe_load`、未知字段逐字保留、tags 规范化 +
@@ -90,11 +86,11 @@ M7 依赖 M6 与 History；M8 依赖 M7。
      NotesLinksPanel/LinkItem（broken/ambiguous 标记、resolved 可点击打开）。
   5. fixtures 与后端/前端测试矩阵全绿；`PyYAML>=6,<7` 锁定依赖。
 - 验收：单篇解析失败隔离为诊断；索引故障不影响 health/AI/Vault 读写/编辑器；
-  其余以 PLAN-M3 §1.2/§9 为准，独立审计负责复核。
+  其余以 M3 阶段计划的验收条款为准，独立审计负责复核。
 
 ## M4 — SQLite FTS、索引重建、性能（开发完成，待独立审计）
 
-- 实施依据：`PLAN-M4.md`（本仓库已提交，M4 唯一实施依据）。
+- 实施依据：M4 阶段计划（内部文档，不随仓库发布）。
 - 已完成内容（对应 M4-01…M4-15）：
   1. `server/index/schema.py`：`SCHEMA_VERSION=1`、notes/tags/properties/
      links/backlinks 单语句 DDL + `MIGRATIONS`（0→1 引导）；`db.py`：
@@ -125,11 +121,11 @@ M7 依赖 M6 与 History；M8 依赖 M7。
      仅用 `tests/fixtures/vault` 与 `tmp_path`。
   7. 性能基准（可选，`LOCALNOTE_RUN_PERF=1` + `pytest -m perf`）：
      10,000 笔记生成器 + rebuild/增量/查询 P50-P95/库大小/峰值内存报告。
-- 验收：以 PLAN-M4 §1.2/§9 为准，独立审计负责复核；M4 门槛通过后才进入 M5。
+- 验收：以 M4 阶段计划的验收条款为准，独立审计负责复核；M4 门槛通过后才进入 M5。
 
 ## M5 — Graph 派生与可视化（开发完成，待独立审计）
 
-实施依据：`PLAN-M5.md`（本仓库已提交，M5 唯一实施依据）。
+实施依据：M5 阶段计划（内部文档，不随仓库发布）。
 
 完成内容（对应 M5-01…M5-12）：
 
@@ -183,7 +179,7 @@ M7 依赖 M6 与 History；M8 依赖 M7。
 
 ## M7 — Policy、Diff、History、Recovery、受控 Agent（已实现）
 
-- 入口：M6 + M1/M4 基线；实施依据 `PLAN-M7.md`。
+- 入口：M6 + M1/M4 基线；实施依据：M7 阶段计划。
 - 内容：动作白名单/严格 Action Schema（policies/actions）、AI 任务事件
   记录（history，`.localnote/index.db` 派生表）、事务/逆序回滚/Undo
   （recovery）、有限可审计 Agent（agents：静态工具 registry + Daily
@@ -194,7 +190,7 @@ M7 依赖 M6 与 History；M8 依赖 M7。
 
 ## M8 — Scheduler、可靠性强化与部署选项（实现完成，待独立审计）
 
-- 入口：M7。实施依据：`PLAN-M8.md`（本仓库已提交，M8 唯一实施依据）。
+- 入口：M7。实施依据：M8 阶段计划（内部文档，不随仓库发布）。
 - 内容与完成项（对应 M8-01…M8-14）：
   1. **Scheduler（只调度、不写业务）**：`server/scheduler/*`；APScheduler
      **3.11.3**（新增锁定依赖 `APScheduler>=3.10,<4`；缺失时降级为纯
@@ -265,7 +261,7 @@ PostgreSQL/Redis/Celery/Docker/云 AI/远程数据库/Electron/Obsidian
 
 ## M9 — 用户直传附件（实现完成，独立审计通过）
 
-- 实施依据：`PLAN-ATTACHMENTS.md` v1.1（含用户裁决：右键目录为真实落点）。
+- 实施依据：附件阶段计划 v1.1（含用户裁决：右键目录为真实落点）。
 - 新增端点：`POST /api/v1/vault/attachments`（JSON ≤10 MiB）、
   `POST /api/v1/vault/attachments/multipart`（流式）、
   `GET/HEAD /api/v1/vault/resource?path=`（只读预览/下载）；既有 5 个 Vault

@@ -9,4 +9,4 @@ M1 **没有 Markdown parser/AST**。本包只提供原始 bytes 与 hash 的工�
 
 M3+ 的只读扫描器位于同一目录的 `frontmatter.py` 与 `wikilinks.py`；它们
 解析 metadata/properties/wikilink，但不改写 bytes。禁止把本 bytes 层改成
-parser/serializer 来“顺手”实现写回（见 PLAN-M1.md §10.4）。
+parser/serializer 来“顺手”实现写回。

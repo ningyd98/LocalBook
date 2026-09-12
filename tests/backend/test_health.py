@@ -14,7 +14,7 @@ def test_health_happy_path(client: TestClient) -> None:
 
 def test_health_body_is_exactly_ok(client: TestClient) -> None:
     response = client.get("/api/v1/health")
-    # Exact contract from PLAN.md 6.1 — no extra fields.
+    # Exact health contract — no extra fields.
     assert response.text == '{"status":"ok"}'
 
 

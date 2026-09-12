@@ -4,8 +4,6 @@
 > `ai-architecture.md`（AI 边界）、`rag-architecture.md`（RAG）、
 > `development-roadmap.md`（路线图）、`api-reference.md`（端点与环境变量）。
 >
-> **说明**：正文中提到的逐里程碑计划文档（`PLAN.md` / `PLAN-M*.md` /
-> `PLAN-ATTACHMENTS.md` 等）属于内部过程文档，不随仓库发布。
 > 本文档描述目标架构与当前实际落地范围（M0 Bootstrap + M1 Vault Core +
 > M2 Web Workspace + M3 Metadata/Links/关键词搜索只读派生层 +
 > M4 SQLite 派生库/FTS5/索引增量与重建/性能基准 +
@@ -87,12 +85,12 @@ flowchart LR
 ## 4. 落地与数据流
 
 Phase 0 实现了粗线部分：Web 首页、FastAPI、health、AI status 探测、配置与
-文档。M1 在其上落地了 Vault Core 数据流（`PLAN-M1.md`），M2 在前端落地
+文档。M1 在其上落地了 Vault Core 数据流，M2 在前端落地
 Workspace → Vault REST → 原始 bytes 的编辑数据流：GET 内容与 sha256 建立 session，
 CodeMirror 只维护源码字符串，预览是经过 sanitizer 的只读派生 HTML，PATCH 始终携带
 expected_sha256；409 进入 conflict，reload 丢弃本地或 keep-local 停止自动保存。
-M3 增加**纯读取的派生层**（`PLAN-M3.md`）：frontmatter/metadata 只读解析、
-wikilink/双链反链、关键词子串搜索，基于可重建的派生索引。M4（`PLAN-M4.md`）
+M3 增加**纯读取的派生层**：frontmatter/metadata 只读解析、
+wikilink/双链反链、关键词子串搜索，基于可重建的派生索引。M4
 把索引存储引擎替换为 `.localnote/index.db` 的 **SQLite 派生库**（notes/tags/
 properties/links/backlinks + FTS5 `notes_fts` + 版本表 migration），links/
 backlinks/tags 查询改从 SQLite 读，搜索主路径切到 FTS5 MATCH（英文/数字/tag/
@@ -100,7 +98,7 @@ basename），中文（任意长度）/Emoji/非 ASCII/符号查询与 FTS 不�
 时降级到 M3 关键词子串路径；watcher 事件增量与 `POST /index/rebuild`
 （单事务清空+重扫）在同一把 RLock 下串行。契约/DTO/错误体不变，SQLite 永远
 是派生数据（删 `.localnote/` 可重建，正文零改动）；索引故障仍只影响
-metadata/links/search（503），永不损坏正文。M5（`PLAN-M5.md`）在 M4
+metadata/links/search（503），永不损坏正文。M5 在 M4
 之上增加**只读 Graph 派生层**：`server/graph` 请求时从 M4 的
 notes/tags/links 构造 Note/Tag 节点与 link/tag 边（`GET /api/v1/graph`、
 `/graph/local/{note}`、`/graph/tag/{tag}`），稳定 ID/排序/分页/截断，
@@ -125,7 +123,7 @@ flowchart LR
 只有 `VaultService` 可以触碰 Vault 文件系统；路由、前端与未来 LLM 永远
 不得直接调用 `pathlib`/`open`/`os.rename` 等。
 
-数据流（对应 PLAN.md 3.3）：
+数据流：
 
 1. 浏览器请求 `GET /api/v1/health`；返回固定响应，不创建 AI client。
 2. 浏览器请求 `GET /api/v1/ai/status`；API 读取 Settings（oMLX base URL、
@@ -170,21 +168,21 @@ Workspace UI；M3 frontmatter/metadata 只读解析、wikilink/双链反链、�
 子串搜索与只读派生索引；M4 SQLite 派生库 + FTS5 全文搜索 + 索引增量与全量
 重建 + 性能基准（`server/index/{schema,db,service}.py`，REST 契约不变，
 `server/{index,metadata,links,search}/*` 与
-`server/markdown/{frontmatter,wikilinks}.py`，详见 README 与 PLAN-M4.md）；
+`server/markdown/{frontmatter,wikilinks}.py`，详见 README）；
 M5 只读 Graph 派生与可视化（`server/graph/{schemas,service}.py` +
 `server/api/routes/graph.py` + `server/index/service.py` 只读查询面；
 `packages/protocol` Graph DTO 镜像、`packages/graph` Graphology/Sigma
 渲染与 WebGL 降级、`packages/workspace` graph slice、web `GraphPanel`，
-详见 README 与 PLAN-M5.md）；
+详见 README）；
 M6 只读 AI（chat/context/结构化辅助：
 `server/ai/workflows.py` 六个只读 workflow + `server/ai/context.py` /
 `candidates.py` / `registry.py`（prompts 版本化）+ `server/ai/adapters/`
 HTTP 边界，REST `/api/v1/ai/{chat,summarize,tags,related,extract_todos,
-classify}`；只读辅助、无任何 AI 写路径，详见 README 与 PLAN-M6.md）；
+classify}`；只读辅助、无任何 AI 写路径，详见 README）；
 M7 受控 Agent/写路径（Policy/Diff/History/Recovery/Undo：
 `server/{agents,policies,actions,history,recovery}/*` 与 REST
 `/api/v1/jobs|history`，Level1 确认/Level2 tag-only 关闭默认，详见
-README 与 PLAN-M7.md）；
+README）；
 M8 本地 Scheduler/可靠性/部署（`server/scheduler/*`：
 APScheduler 首选/asyncio 降级、静态 daily_organizer(23:00)/
 weekly_review(周日 20:00)/可选 index_consistency，REST
@@ -192,7 +190,7 @@ weekly_review(周日 20:00)/可选 index_consistency，REST
 run 审计记录、超时/幂等/清理、启动扫描只标 recovery_required、
 显式 hash-guard 恢复、History retention（30 天/run≤1000）、局域网
 0.0.0.0 显式告警 + CORS；定时/手动都走 M7 受控链、默认只生成 Level1
-preview；详见 README 与 PLAN-M8.md）。
+preview；详见 README）。
 
 M9 用户直传附件（附件计划 v1.1：`server/vault/attachments.py` 命名/目标目录
 纯函数 + `server/vault/atomic_write.py` 流式 no-overwrite 原语 +
@@ -201,8 +199,7 @@ REST `POST /api/v1/vault/attachments`、`POST /api/v1/vault/attachments/multipar
 `GET /api/v1/vault/resource`；前端四入口 = 工具栏/编辑器拖拽/粘贴/文件树目录
 右键，落点由入口决定且目标目录必须已存在、不自动建月目录；引用为相对当前
 笔记的 POSIX 路径；上传是用户直传旁路，不经过 PolicyEngine，
-`attachment_write` 对 Agent 仍永久 deny；详见 README 与
-PLAN-ATTACHMENTS.md v1.1）。
+`attachment_write` 对 Agent 仍永久 deny；详见 README）。
 
 M10 文件重命名（文件树右键「重命名」/双击文件名，前端 `renameEntry`）：
 复用既有 `POST /api/v1/vault/file/move` 做同目录移动，**未新增后端端点、未改
@@ -286,7 +283,7 @@ server/api/routes/scheduler.py M8 scheduler HTTP 编排（status/run/runs/recove
 packages/editor/src/livePreviewExt.ts  M12 单栏实时预览 + M13 任务复选框装饰层（不改 bytes、不改解析器）
 ```
 
-详细目录见 PLAN.md 第 5 节与 README.md「目录概览」。
+详细目录见 README.md「目录概览」。
 
 ## 9. 可观测性与安全
 
@@ -294,6 +291,5 @@ packages/editor/src/livePreviewExt.ts  M12 单栏实时预览 + M13 任务复选
   error 分类/耗时；**不记录** prompt/response/凭据。
 - 端点回显剥离 userinfo 与 query；错误响应无 traceback。
 - 文件路径一律经 `VaultService` resolve 后验证在 root 内，拒绝 `../`、
-  绝对路径注入与 symlink escape（M1 已实现并作为阻断验收项，见
-  `PLAN-M1.md` §4.2）。
+  绝对路径注入与 symlink escape（M1 已实现并作为阻断验收项）。
 - 未知 Markdown/Obsidian 语法未来必须原样保留；任何转换先 diff/备份。

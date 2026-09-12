@@ -22,7 +22,7 @@ class VaultErrorCode(StrEnum):
     FILE_CONFLICT = "file_conflict"
     EXPECTED_HASH_REQUIRED = "expected_hash_required"
     INVALID_REQUEST = "invalid_request"
-    # Canonical wire code from PLAN-M1.md §4.6 error enum (``file_too_large``),
+    # Canonical wire code from the error code enum (``file_too_large``),
     # mapped to HTTP 413.  (The plan text sometimes abbreviates this as
     # "file too large"/"too_large" when describing the HTTP mapping.)
     FILE_TOO_LARGE = "file_too_large"

@@ -374,4 +374,4 @@ Python 3.12.13、SQLite 3.53.4、未安装 numpy（纯 Python 内核）、Mock �
 
 ## 10. 已知限制与后续
 
-见 `M14-REPORT.md` 第 10 节。
+见 CHANGELOG 的 M14 小节。
