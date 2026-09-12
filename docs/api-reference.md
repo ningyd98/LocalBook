@@ -125,7 +125,7 @@ query；错误不含堆栈/响应体。
 workflow 的模型未配置/离线返回 503，非法模型输出返回 502，能力缺失返回
 `capability_unavailable`。详见 [`ai-architecture.md`](./ai-architecture.md)。
 
-## 多供应商 AI 档案（PLAN-PROVIDERS）
+## 多供应商 AI 档案
 
 | 方法/路径 | 用途 | 关键语义 |
 |---|---|---|

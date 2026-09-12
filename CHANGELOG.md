@@ -20,7 +20,7 @@ V1.1 把 1.0.0 之后累积的 M14 与一系列交互/可靠性改进一次性�
 - **多供应商 AI 档案**：`settings.ai.profiles[]` +
   `active_profile_id`，内置 oMLX / OpenAI / DeepSeek / Moonshot / 自定义模板，
   一键切换、密钥只写入不回显、上限 30 个。接口见
-  [`docs/api-reference.md`](./docs/api-reference.md#多供应商-ai-档案plan-providers)。
+  [`docs/api-reference.md`](./docs/api-reference.md#多供应商-ai-档案)。
 - **回收站（软删除）**：文件与文件夹整体移入服务自有的 `.localnote/trash/`，
   默认保留 **30 天**；`GET/POST /api/v1/trash`、单项恢复（可占位改名）、彻底删除、
   清空。`DELETE /vault/file` 保留为字节级永久删除原语。
