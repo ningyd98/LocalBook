@@ -44,7 +44,7 @@ curl -fsS -X PATCH 'http://127.0.0.1:3780/api/v1/vault/file' \
 错误示例：`GET ...?path=../outside.md` → 400 `path_traversal`；root 未配置 →
 503 `vault_not_configured`；hash 过期 → 409 `file_conflict`。
 
-## 附件上传（PLAN-ATTACHMENTS v1.1 / M9）
+## 附件上传（M9）
 
 | 方法/路径 | 说明 | 主要错误 |
 |---|---|---|
@@ -123,8 +123,7 @@ query；错误不含堆栈/响应体。
 | `POST /api/v1/ai/classify` | 分类笔记 | 输出严格结构化建议 |
 
 workflow 的模型未配置/离线返回 503，非法模型输出返回 502，能力缺失返回
-`capability_unavailable`。详见 [`ai-architecture.md`](./ai-architecture.md)
-与 [`../PLAN-M6.md`](../PLAN-M6.md)。
+`capability_unavailable`。详见 [`ai-architecture.md`](./ai-architecture.md)。
 
 ## 多供应商 AI 档案（PLAN-PROVIDERS）
 
@@ -143,7 +142,7 @@ workflow 的模型未配置/离线返回 503，非法模型输出返回 502，�
   配置」，激活档案时从档案投影而来；`PATCH /api/v1/settings` 编辑的正是当前生效
   档案，两处视图不会分叉。
 - 上限 30 个档案（超出 422 `ai_profiles_full`）；任何响应都不回显密钥，`/settings/*`
-  仍限本机可信页面。详见 [`../PLAN-PROVIDERS.md`](../PLAN-PROVIDERS.md)。
+  仍限本机可信页面。
 
 ## 本地优先 RAG（M14）
 

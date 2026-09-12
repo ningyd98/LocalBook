@@ -17,10 +17,10 @@ V1.1 把 1.0.0 之后累积的 M14 与一系列交互/可靠性改进一次性�
   `POST /rag/index/rebuild`、`GET /rag/index/status`。含**可选 numpy 加速内核**
   与 **OpenAI-compatible 重排**（兼容 Jina/Cohere/vLLM 响应形状）。详见下方
   [M14] 小节与 [`docs/rag-architecture.md`](./docs/rag-architecture.md)。
-- **多供应商 AI 档案（PLAN-PROVIDERS）**：`settings.ai.profiles[]` +
+- **多供应商 AI 档案**：`settings.ai.profiles[]` +
   `active_profile_id`，内置 oMLX / OpenAI / DeepSeek / Moonshot / 自定义模板，
-  一键切换、密钥只写入不回显、上限 30 个。详见
-  [`PLAN-PROVIDERS.md`](./PLAN-PROVIDERS.md)。
+  一键切换、密钥只写入不回显、上限 30 个。接口见
+  [`docs/api-reference.md`](./docs/api-reference.md#多供应商-ai-档案plan-providers)。
 - **回收站（软删除）**：文件与文件夹整体移入服务自有的 `.localnote/trash/`，
   默认保留 **30 天**；`GET/POST /api/v1/trash`、单项恢复（可占位改名）、彻底删除、
   清空。`DELETE /vault/file` 保留为字节级永久删除原语。

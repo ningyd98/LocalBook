@@ -37,5 +37,4 @@ M6 is implemented as a read-only AI layer (PLAN-M6). The surface is:
   fake adapters, and `tmp_path` fixtures only; they never use a real user Vault,
   real oMLX, or cloud AI.
 
-See [`PLAN-M6.md`](../../PLAN-M6.md), [`PLAN-M7.md`](../../PLAN-M7.md), and
-[`docs/ai-architecture.md`](../../docs/ai-architecture.md).
+See [`docs/ai-architecture.md`](../../docs/ai-architecture.md).

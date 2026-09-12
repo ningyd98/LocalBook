@@ -1,5 +1,9 @@
 # LocalNote 开发路线图（M0–M13）
 
+> **说明**：正文中提到的逐里程碑计划文档（`PLAN.md` / `PLAN-M*.md` /
+> `PLAN-ATTACHMENTS.md` 等）属于内部过程文档，不随仓库发布；保留提及仅为
+> 记录当时的实施依据。
+>
 > 本文档给出各里程碑的入口、目标、依赖、验收门槛，以及**不可提前实现**
 > 列表。当前阶段：**M9–M12 实现完成**（M9 用户直传附件已通过独立审计；
 > M10 文件重命名、M11 从 wikilink 创建嵌套笔记、M12 单栏实时预览为本轮
@@ -311,8 +315,7 @@ PostgreSQL/Redis/Celery/Docker/云 AI/远程数据库/Electron/Obsidian
 
 ## M14 — LocalBook RAG（已实现）
 
-- 架构与配置见 [`rag-architecture.md`](./rag-architecture.md)，交付报告见
-  [`../M14-REPORT.md`](../M14-REPORT.md)。
+- 架构与配置见 [`rag-architecture.md`](./rag-architecture.md)。
 - 数据链：Markdown（只读）→ Markdown 感知分块 → 独立 EmbeddingProvider →
   SQLite 向量索引（`rag_documents`/`rag_chunks`/`rag_chunks_fts`/`rag_embeddings`/
   `rag_index_state`）→ FTS5 + 向量混合检索（RRF）→ 可选 Link 第三路 →
@@ -341,11 +344,11 @@ PostgreSQL/Redis/Celery/Docker/云 AI/远程数据库/Electron/Obsidian
   `./scripts/rag-eval.sh` 272 passed + 评估表 + 门槛校验通过（exit 0）；
   `python -m compileall server`、protocol/workspace/web typecheck、web build 通过。
 - Link 路若要重新评估，需先换语料（100+ 篇、链接密集、`candidate_k` 远小于语料规模）；
-  详见 [`../M14-REPORT.md`](../M14-REPORT.md) §9.5 与 §11 第 7 条。
+  完整调参与结论见 [`../CHANGELOG.md`](../CHANGELOG.md) 的 M14 小节。
 
 ## 变更与审计
 
-- 每个里程碑开始前必须补充并审核详细计划（像 PLAN.md 这样）。
+- 每个里程碑开始前必须补充并审核详细计划（该逐里程碑计划为内部文档，不随仓库发布）。
 - 任何“看起来可行”的提前实现都应被审计拦下；占位目录必须保持 placeholder
   标注直到真实实现落地。
 - 阶段间开发报告须如实记录偏差，不得静默改设计。

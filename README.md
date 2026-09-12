@@ -367,13 +367,13 @@ docs/                  架构、Vault 规格、AI、RAG、路线图、API 参考
   文件夹软删除与回收站、嵌套文档与分级收缩、字体/字号体系、分屏同步滚动。
 
 路线图与每个里程碑的验收记录见
-[`docs/development-roadmap.md`](./docs/development-roadmap.md) 与 `PLAN-M*.md`。
+[`docs/development-roadmap.md`](./docs/development-roadmap.md)。
 
 > **关于 RAG 的 Link/Graph 第三路（诚实结论）**：链路、配置面与界面已完整落地，
 > 但在现有 Golden Dataset 上**实测中性、零增益**（`hybrid_link` 与纯 `hybrid` 的
 > recall@5/@10/MRR 逐位相同），因此**保持默认关闭**。这是关于该语料的结论，
-> 不是「图扩展普遍无用」的判断。详见
-> [`M14-REPORT.md`](./M14-REPORT.md) §9.5。
+> 不是「图扩展普遍无用」的判断。完整调参记录见
+> [`CHANGELOG.md`](./CHANGELOG.md) 的 M14 小节。
 
 ## 文档
 
@@ -385,8 +385,6 @@ docs/                  架构、Vault 规格、AI、RAG、路线图、API 参考
 | [`docs/ai-architecture.md`](./docs/ai-architecture.md) | AI 适配层、workflow、候选与 Prompt 版本 |
 | [`docs/rag-architecture.md`](./docs/rag-architecture.md) | RAG 分块/索引/检索/证据包/引用校验 |
 | [`docs/development-roadmap.md`](./docs/development-roadmap.md) | 里程碑与验收记录 |
-| [`M14-REPORT.md`](./M14-REPORT.md) | RAG 阶段完整实测报告（含调参与性能） |
-| [`PLAN-PROVIDERS.md`](./PLAN-PROVIDERS.md) | 多供应商 AI 档案设计 |
 | [`CHANGELOG.md`](./CHANGELOG.md) | 逐版本变更 |
 
 ## 已知限制
@@ -402,5 +400,5 @@ docs/                  架构、Vault 规格、AI、RAG、路线图、API 参考
 
 **UNLICENSED** —— 尚未开放贡献流程与许可选择，保留所有权利。
 
-> 开发者在动手前请先阅读 `PLAN.md`、`docs/architecture.md` 与
-> `docs/development-roadmap.md`。
+> 开发者在动手前请先阅读 `docs/architecture.md`、`docs/development-roadmap.md`
+> 与 `docs/vault-spec.md`。

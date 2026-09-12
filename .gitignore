@@ -37,3 +37,12 @@ build/
 
 # Agent tooling runtime state (not part of the project)
 .agent-teams/
+
+# Internal process docs — kept locally, never published
+/PLAN.md
+/PLAN-*.md
+/DEVELOPMENT-LOG-*.md
+/M14-REPORT.md
+/review/
+/integration/
+/verification/

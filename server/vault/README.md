@@ -14,6 +14,6 @@
   start/stop/flush；缺失时状态 `unavailable`）。
 - `lifecycle.py` — app lifespan wiring（未配置不启动；root 缺失 → 503）。
 
-详细契约见 [`docs/vault-spec.md`](../../docs/vault-spec.md) 与
-[`PLAN-M1.md`](../../PLAN-M1.md)。M2 入口：编辑器/Workspace 只准调用
+详细契约见 [`docs/vault-spec.md`](../../docs/vault-spec.md)。
+M2 入口：编辑器/Workspace 只准调用
 `VaultService` / REST，不得直接触碰 FS。

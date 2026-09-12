@@ -1,7 +1,11 @@
 # LocalNote 架构
 
-> 配套文档：`PLAN.md`（实施依据）、`vault-spec.md`（Vault 兼容性规范）、
-> `ai-architecture.md`（AI 边界）、`development-roadmap.md`（路线图）。
+> 配套文档：`vault-spec.md`（Vault 兼容性规范）、
+> `ai-architecture.md`（AI 边界）、`rag-architecture.md`（RAG）、
+> `development-roadmap.md`（路线图）、`api-reference.md`（端点与环境变量）。
+>
+> **说明**：正文中提到的逐里程碑计划文档（`PLAN.md` / `PLAN-M*.md` /
+> `PLAN-ATTACHMENTS.md` 等）属于内部过程文档，不随仓库发布。
 > 本文档描述目标架构与当前实际落地范围（M0 Bootstrap + M1 Vault Core +
 > M2 Web Workspace + M3 Metadata/Links/关键词搜索只读派生层 +
 > M4 SQLite 派生库/FTS5/索引增量与重建/性能基准 +
