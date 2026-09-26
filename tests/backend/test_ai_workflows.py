@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -20,7 +22,7 @@ from server.ai.schemas import (
     SummarizeRequest,
     TagsRequest,
 )
-from server.ai.workflows import AIWorkflowService
+from server.ai.workflows import AIWorkflowService, _summary_sections
 from server.config import AISettings
 
 
@@ -64,6 +66,38 @@ def make_service(vault=None, index=None, responses: list[object] | None = None):
     adapter = FakeAdapter(responses or ['{"summary": "s", "key_points": []}'])
     service = AIWorkflowService(AISettings(), adapter, vault=vault, index=index)
     return service, adapter
+
+
+def test_summary_sections_preserve_headings_lines_and_bound_long_lines() -> None:
+    sections = _summary_sections("# Start\n" + "x" * 25 + "\n## End\ny", max_chars=10)
+    assert sections[0]["heading"] == "Start"
+    assert sections[-1]["heading"] == "End"
+    assert len(sections) >= 4
+    assert all(len(line) <= 10 for section in sections for _, line in section["lines"])
+
+
+def test_summarize_keeps_event_loop_responsive_during_note_read() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingVault:
+        def read_bytes(self, path: str):
+            started.set()
+            release.wait(timeout=1)
+            return b"# Note\nA short summary source.", "unused-digest"
+
+    service, _ = make_service(vault=BlockingVault())
+
+    async def run() -> None:
+        task = asyncio.create_task(service.summarize(SummarizeRequest(note_path="note.md")))
+        try:
+            assert await asyncio.wait_for(asyncio.to_thread(started.wait, 1), 1.5)
+            assert not task.done(), "note reading blocked the event loop"
+        finally:
+            release.set()
+        await task
+
+    asyncio.run(run())
 
 
 @pytest.fixture

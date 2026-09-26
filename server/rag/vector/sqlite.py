@@ -17,6 +17,7 @@ protocol without touching retrieval, context building or the API.
 
 from __future__ import annotations
 
+import heapq
 import logging
 import math
 import sqlite3
@@ -81,19 +82,17 @@ class SqliteVectorStore:
         except (DatabaseUnavailable, IndexDatabaseError) as exc:
             raise RagStoreUnavailable("RAG index database is unavailable") from exc
         try:
-            connection = self._db._require_connection()
-            self._fts_available = ensure_rag_tables(
-                connection, tokenizer=self._db.fts_tokenizer
-            )
-            self._opened = True
-            state = self._read_state()
+            with self._db.locked_connection() as connection:
+                self._fts_available = ensure_rag_tables(
+                    connection, tokenizer=self._db.fts_tokenizer
+                )
+                self._opened = True
+                state = self._read_state()
         except sqlite3.Error as exc:
             raise RagStoreUnavailable("RAG derived tables are unavailable") from exc
         if state.embedding_dimension > 0:
             self._vector_dimension = int(state.embedding_dimension)
-            self._embedding_column = self._column_for_dimension(
-                self._vector_dimension
-            )
+            self._embedding_column = self._column_for_dimension(self._vector_dimension)
 
     @property
     def fts_available(self) -> bool:
@@ -102,6 +101,13 @@ class SqliteVectorStore:
     @property
     def db_path(self):
         return self._db.path
+
+    @property
+    def generation(self) -> int:
+        """Connection write generation for safe in-process read caches."""
+        self.ensure_ready()
+        with self._db.locked_connection() as connection:
+            return int(connection.total_changes)
 
     def close(self) -> None:
         self._opened = False
@@ -160,15 +166,11 @@ class SqliteVectorStore:
     # ------------------------------------------------------------------
 
     def document_hash(self, path: str) -> str | None:
-        row = self._fetchone(
-            "SELECT sha256 FROM rag_documents WHERE path = ?", (path,)
-        )
+        row = self._fetchone("SELECT sha256 FROM rag_documents WHERE path = ?", (path,))
         return str(row["sha256"]) if row is not None else None
 
     def document_content_hash(self, path: str) -> str | None:
-        row = self._fetchone(
-            "SELECT content_hash FROM rag_documents WHERE path = ?", (path,)
-        )
+        row = self._fetchone("SELECT content_hash FROM rag_documents WHERE path = ?", (path,))
         return str(row["content_hash"]) if row is not None else None
 
     def upsert_chunks(
@@ -177,8 +179,13 @@ class SqliteVectorStore:
         *,
         sha256: str | None = None,
         content_hash: str | None = None,
+        prune_fts: bool = True,
     ) -> None:
-        """Atomically replace every chunk row of the documents in ``chunks``."""
+        """Replace chunk rows, optionally skipping the global FTS orphan sweep.
+
+        A full rebuild starts from ``reset()``, so that global sweep is redundant;
+        incremental updates keep the default global-prune safety net.
+        """
         if not chunks:
             return
         self.ensure_ready()
@@ -201,22 +208,18 @@ class SqliteVectorStore:
                         [document_id, *keep],
                     )
                 else:
-                    conn.execute(
-                        "DELETE FROM rag_chunks WHERE document_id = ?", (document_id,)
-                    )
+                    conn.execute("DELETE FROM rag_chunks WHERE document_id = ?", (document_id,))
                 conn.execute(
                     "DELETE FROM rag_embeddings WHERE document_id = ? "
                     "AND chunk_id NOT IN (SELECT chunk_id FROM rag_chunks)",
                     (document_id,),
                 )
-                if self._fts_available and keep:
-                    placeholders = ",".join("?" for _ in keep)
-                    conn.execute(
-                        "DELETE FROM rag_chunks_fts WHERE document_id = ? "
-                        f"AND chunk_id NOT IN ({placeholders})",
-                        [document_id, *keep],
-                    )
-                elif self._fts_available:
+                if self._fts_available:
+                    # FTS5's document_id/chunk_id columns are UNINDEXED. A
+                    # delete for every chunk scans the whole FTS table each
+                    # time and holds the shared index lock for minutes on
+                    # large documents. Replace this document's mirror in one
+                    # pass, then insert the current chunks below.
                     conn.execute(
                         "DELETE FROM rag_chunks_fts WHERE document_id = ?",
                         (document_id,),
@@ -263,13 +266,6 @@ class SqliteVectorStore:
                         ),
                     )
                     if self._fts_available:
-                        # Regular FTS5 tables accept no UNIQUE constraint, so an
-                        # explicit delete keeps the mirror row-for-row identical
-                        # to rag_chunks (a re-inserted chunk id must not double).
-                        conn.execute(
-                            "DELETE FROM rag_chunks_fts WHERE chunk_id = ?",
-                            (chunk.chunk_id,),
-                        )
                         conn.execute(
                             "INSERT INTO rag_chunks_fts (chunk_id, document_id, "
                             "path, heading, tags, content) VALUES (?,?,?,?,?,?)",
@@ -309,7 +305,8 @@ class SqliteVectorStore:
                 )
 
         self._run_transaction(body)
-        self._prune_fts()
+        if prune_fts:
+            self._prune_fts()
         for path in documents:
             self._id_cache.pop(path, None)
 
@@ -353,8 +350,7 @@ class SqliteVectorStore:
             )
             if self._fts_available:
                 conn.execute(
-                    "UPDATE rag_chunks_fts SET document_id = ?, path = ? "
-                    "WHERE document_id = ?",
+                    "UPDATE rag_chunks_fts SET document_id = ?, path = ? WHERE document_id = ?",
                     (new_path, new_path, old_path),
                 )
 
@@ -369,8 +365,7 @@ class SqliteVectorStore:
             return
         self._run_transaction(
             lambda conn: conn.execute(
-                "DELETE FROM rag_chunks_fts WHERE chunk_id NOT IN "
-                "(SELECT chunk_id FROM rag_chunks)"
+                "DELETE FROM rag_chunks_fts WHERE chunk_id NOT IN (SELECT chunk_id FROM rag_chunks)"
             )
         )
 
@@ -381,13 +376,10 @@ class SqliteVectorStore:
         # embedding instead of a whole note.
         conn.execute("DELETE FROM rag_chunks WHERE document_id = ?", (document_id,))
         conn.execute(
-            "DELETE FROM rag_embeddings WHERE chunk_id NOT IN "
-            "(SELECT chunk_id FROM rag_chunks)"
+            "DELETE FROM rag_embeddings WHERE chunk_id NOT IN (SELECT chunk_id FROM rag_chunks)"
         )
         if self._fts_available:
-            conn.execute(
-                "DELETE FROM rag_chunks_fts WHERE document_id = ?", (document_id,)
-            )
+            conn.execute("DELETE FROM rag_chunks_fts WHERE document_id = ?", (document_id,))
         conn.execute("DELETE FROM rag_documents WHERE path = ?", (document_id,))
 
     def upsert_embeddings(
@@ -470,8 +462,7 @@ class SqliteVectorStore:
             run.extend(vector)
             embedded += 1
         conn.execute(
-            f"UPDATE rag_documents SET {column} = ?, embedded_count = ? "
-            "WHERE path = ?",
+            f"UPDATE rag_documents SET {column} = ?, embedded_count = ? WHERE path = ?",
             (bytes(run), embedded, document_id),
         )
 
@@ -499,8 +490,7 @@ class SqliteVectorStore:
         def body(conn: sqlite3.Connection) -> None:
             for path in paths:
                 conn.execute(
-                    "UPDATE rag_documents SET status = 'pending', diagnostic = ? "
-                    "WHERE path = ?",
+                    "UPDATE rag_documents SET status = 'pending', diagnostic = ? WHERE path = ?",
                     (str(reason)[:200], path),
                 )
 
@@ -511,8 +501,7 @@ class SqliteVectorStore:
 
         def body(conn: sqlite3.Connection) -> None:
             conn.execute(
-                "UPDATE rag_documents SET status = 'failed', diagnostic = ? "
-                "WHERE path = ?",
+                "UPDATE rag_documents SET status = 'failed', diagnostic = ? WHERE path = ?",
                 (str(reason)[:200], path),
             )
 
@@ -531,8 +520,7 @@ class SqliteVectorStore:
 
     def chunks_for_document(self, document_id: str) -> list[RAGChunk]:
         rows = self._fetchall(
-            f"SELECT {_CHUNK_COLUMNS} FROM rag_chunks WHERE document_id = ? "
-            "ORDER BY chunk_index",
+            f"SELECT {_CHUNK_COLUMNS} FROM rag_chunks WHERE document_id = ? ORDER BY chunk_index",
             (document_id,),
         )
         return [self._chunk_from_row(row) for row in rows]
@@ -568,9 +556,7 @@ class SqliteVectorStore:
             return {}
         rows = self._fetchall(
             "SELECT chunk_id, content_hash FROM rag_embeddings WHERE model = ? "
-            "AND embedding_version = ? AND chunk_id IN ("
-            + ",".join("?" for _ in chunk_ids)
-            + ")",
+            "AND embedding_version = ? AND chunk_id IN (" + ",".join("?" for _ in chunk_ids) + ")",
             [model, embedding_version, *chunk_ids],
         )
         return {str(row["chunk_id"]): str(row["content_hash"]) for row in rows}
@@ -588,6 +574,38 @@ class SqliteVectorStore:
 
     def embedded_count(self) -> int:
         return self._scalar("SELECT COUNT(*) FROM rag_embeddings")
+
+    def semantic_embeddings_compatible(
+        self, *, model: str, dimension: int, version: str
+    ) -> bool:
+        """Reject a graph projection if any stored chunk uses another embedding space."""
+        return self._fetchone(
+            "SELECT 1 FROM rag_embeddings WHERE model <> ? OR dimension <> ? "
+            "OR embedding_version <> ? LIMIT 1",
+            (model, dimension, version),
+        ) is None
+
+    def semantic_note_vectors(
+        self, paths: Sequence[str], *, model: str, dimension: int, version: str
+    ):
+        """Read one packed vector run and fingerprint per document.
+
+        This method is intentionally read-only. Callers validate each document
+        against the derived note index and check embedding compatibility first.
+        """
+        if not paths or dimension <= 0:
+            return []
+        column = self._column_for_dimension(dimension)
+        if not self._column_exists(column):
+            return []
+        marks = ",".join("?" for _ in paths)
+        return self._fetchall(
+            "SELECT d.path, d.sha256, d.chunk_count, d.embedded_count, "
+            "? AS dimension, ? AS model, ? AS embedding_version, "
+            f"d.{column} AS vector FROM rag_documents d "
+            f"WHERE d.path IN ({marks}) AND d.{column} IS NOT NULL ORDER BY d.path",
+            [dimension, model, version, *paths],
+        )
 
     def document_count(self) -> int:
         return self._scalar("SELECT COUNT(*) FROM rag_documents")
@@ -640,22 +658,31 @@ class SqliteVectorStore:
         if not self._column_exists(column):
             return []
         try:
+            path_filter = ""
+            params: list[str] = []
+            if allowed_paths is not None:
+                paths = list(dict.fromkeys(str(path) for path in allowed_paths if path))
+                if not paths:
+                    return []
+                # Keep scoped vector scans in SQLite instead of unpacking every
+                # document's packed embedding then discarding non-matches.
+                path_filter = " AND path IN (" + ",".join("?" for _ in paths) + ")"
+                params = paths
             rows = self._db.fetchall(
                 f"SELECT path, {column} AS vectors FROM rag_documents "
                 f"WHERE {column} IS NOT NULL "
-                f"AND length({column}) >= {4 * dimension}"
+                f"AND length({column}) >= {4 * dimension}{path_filter}", params
             )
         except sqlite3.Error as exc:
             logger.warning("rag vector scan failed: %s", exc)
             return []
 
-        allowed = set(allowed_paths) if allowed_paths is not None else None
+        candidate_rows = rows
+        ids_by_path = self._chunk_ids_for_many([str(row["path"]) for row in candidate_rows])
         scored: list[tuple[float, str]] = []
-        for row in rows:
+        for row in candidate_rows:
             path = str(row["path"])
-            if allowed is not None and path not in allowed:
-                continue
-            ids = self._chunk_ids_for(path)
+            ids = ids_by_path.get(path, [])
             if not ids:
                 continue
             # The kernel scores the document's whole vector run (numpy when it
@@ -665,8 +692,11 @@ class SqliteVectorStore:
                     scored.append((score, ids[index]))
         if not scored:
             return []
-        scored.sort(key=lambda item: (-item[0], item[1]))
-        selected = scored[: max(1, int(top_k))]
+        selected = heapq.nsmallest(
+            max(1, int(top_k)),
+            scored,
+            key=lambda item: (-item[0], item[1]),
+        )
         details = self._details_by_chunk_id([chunk_id for _, chunk_id in selected])
         hits: list[VectorHit] = []
         for rank, (score, chunk_id) in enumerate(selected, start=1):
@@ -676,17 +706,13 @@ class SqliteVectorStore:
             hits.append(self._hit_from_row(row, score, rank))
         return hits
 
-    def _details_by_chunk_id(
-        self, chunk_ids: Sequence[str]
-    ) -> dict[str, sqlite3.Row]:
+    def _details_by_chunk_id(self, chunk_ids: Sequence[str]) -> dict[str, sqlite3.Row]:
         if not chunk_ids:
             return {}
         rows = self._fetchall(
             "SELECT chunk_id, document_id, path, heading, heading_path, "
             "section_path, start_line, end_line, content, content_hash, tags "
-            "FROM rag_chunks WHERE chunk_id IN ("
-            + ",".join("?" for _ in chunk_ids)
-            + ")",
+            "FROM rag_chunks WHERE chunk_id IN (" + ",".join("?" for _ in chunk_ids) + ")",
             list(chunk_ids),
         )
         return {str(row["chunk_id"]): row for row in rows}
@@ -711,18 +737,41 @@ class SqliteVectorStore:
         )
 
     def _chunk_ids_for(self, path: str) -> list[str]:
-        if path in self._id_cache:
-            return self._id_cache[path]
-        rows = self._fetchall(
-            "SELECT chunk_id FROM rag_chunks WHERE document_id = ? "
-            "ORDER BY chunk_index",
-            (path,),
-        )
-        ids = [str(row["chunk_id"]) for row in rows]
-        if len(self._id_cache) > 512:
-            self._id_cache.clear()
-        self._id_cache[path] = ids
-        return ids
+        return self._chunk_ids_for_many([path]).get(path, [])
+
+    def _chunk_ids_for_many(self, paths: Sequence[str]) -> dict[str, list[str]]:
+        """Load uncached document chunk ids in bounded batches.
+
+        Vector search scans one packed vector run per document. Loading the chunk
+        ids one document at a time turns a cold search into one SQL query per
+        note; batching keeps the same cache semantics while reducing that to a
+        small number of queries.
+        """
+        unique = list(dict.fromkeys(str(path) for path in paths))
+        missing = [path for path in unique if path not in self._id_cache]
+        # Keep this call's results separately: filling the cache may evict
+        # entries loaded earlier in the same large search.
+        loaded: dict[str, list[str]] = {
+            path: self._id_cache[path] for path in unique if path in self._id_cache
+        }
+        for start in range(0, len(missing), 400):
+            window = missing[start : start + 400]
+            if not window:
+                continue
+            rows = self._fetchall(
+                "SELECT document_id, chunk_id FROM rag_chunks WHERE document_id IN ("
+                + ",".join("?" for _ in window)
+                + ") ORDER BY document_id, chunk_index",
+                window,
+            )
+            grouped = {path: [] for path in window}
+            for row in rows:
+                grouped.setdefault(str(row["document_id"]), []).append(str(row["chunk_id"]))
+            loaded.update(grouped)
+            if len(self._id_cache) + len(window) > 512:
+                self._id_cache.clear()
+            self._id_cache.update(grouped)
+        return {path: loaded.get(path, []) for path in unique}
 
     def invalidate_id_cache(self) -> None:
         self._id_cache = {}
@@ -753,12 +802,7 @@ class SqliteVectorStore:
         column = self._column_for_dimension(resolved)
         if not self._column_exists(column):
             return False
-        return (
-            self._scalar(
-                f"SELECT COUNT(*) FROM rag_documents WHERE {column} IS NOT NULL"
-            )
-            > 0
-        )
+        return self._scalar(f"SELECT COUNT(*) FROM rag_documents WHERE {column} IS NOT NULL") > 0
 
     # ------------------------------------------------------------------
     # Keyword search over chunks (used by KeywordRetriever)
@@ -841,10 +885,7 @@ class SqliteVectorStore:
             + ") ORDER BY hits DESC, c.path, c.chunk_index LIMIT ?"
         )
         rows = self._fetchall(sql, [*params, *score_params, max(1, int(limit))])
-        return [
-            self._hit_from_row(row, 0.0, rank)
-            for rank, row in enumerate(rows, start=1)
-        ]
+        return [self._hit_from_row(row, 0.0, rank) for rank, row in enumerate(rows, start=1)]
 
     # ------------------------------------------------------------------
     # Whole-index operations
@@ -877,9 +918,7 @@ class SqliteVectorStore:
             return RAGIndexState()
         last_indexed = row["last_indexed_at"]
         try:
-            parsed = (
-                datetime.fromisoformat(str(last_indexed)) if last_indexed else None
-            )
+            parsed = datetime.fromisoformat(str(last_indexed)) if last_indexed else None
         except ValueError:
             parsed = None
         return RAGIndexState(
@@ -930,12 +969,8 @@ class SqliteVectorStore:
         state = self._read_state()
         state.indexed_documents = self.document_count()
         state.chunk_count = self.chunk_count()
-        state.pending = self._scalar(
-            "SELECT COUNT(*) FROM rag_documents WHERE status = 'pending'"
-        )
-        state.failed = self._scalar(
-            "SELECT COUNT(*) FROM rag_documents WHERE status = 'failed'"
-        )
+        state.pending = self._scalar("SELECT COUNT(*) FROM rag_documents WHERE status = 'pending'")
+        state.failed = self._scalar("SELECT COUNT(*) FROM rag_documents WHERE status = 'failed'")
         missing = self._scalar(
             "SELECT COUNT(*) FROM rag_chunks c LEFT JOIN rag_embeddings e "
             "ON e.chunk_id = c.chunk_id WHERE e.chunk_id IS NULL"
@@ -976,9 +1011,7 @@ class SqliteVectorStore:
         row = self._fetchone(sql, params)
         return int(row[0]) if row is not None else 0
 
-    def legacy_vector_scan(
-        self, vector: Sequence[float], top_k: int
-    ) -> list[VectorHit]:
+    def legacy_vector_scan(self, vector: Sequence[float], top_k: int) -> list[VectorHit]:
         """Reference scan used to validate the fast path's ranking.
 
         Deliberately simple (one row per embedding, no per-document packing) so

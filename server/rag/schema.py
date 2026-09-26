@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS rag_chunks (
 _CHUNK_INDEXES_DDL = (
     "CREATE INDEX IF NOT EXISTS idx_rag_chunks_document "
     "ON rag_chunks (document_id)",
+    "CREATE INDEX IF NOT EXISTS idx_rag_chunks_document_order "
+    "ON rag_chunks (document_id, chunk_index)",
     "CREATE INDEX IF NOT EXISTS idx_rag_chunks_path ON rag_chunks (path)",
 )
 

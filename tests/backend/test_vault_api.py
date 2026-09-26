@@ -510,6 +510,34 @@ def test_create_into_missing_parent_is_404(
     assert _error(response)["code"] == "not_found"
 
 
+def test_list_hashing_has_a_fixed_io_budget(
+    vault_service_factory: object,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Large trees are listed with at most the configured synchronous hashes."""
+    import server.vault.service as service_module
+
+    root = tmp_path / "vault"
+    root.mkdir()
+    for index in range(80):
+        (root / f"{index:03}.md").write_bytes(b"x" * 1024)
+    service: VaultService = vault_service_factory(root)  # type: ignore[call-arg]
+    real_digest = service_module._digest_file
+    calls = 0
+
+    def counted_digest(path: Path, *, max_bytes: int | None = None) -> tuple[str, int]:
+        nonlocal calls
+        calls += 1
+        return real_digest(path, max_bytes=max_bytes)
+
+    monkeypatch.setattr(service_module, "_digest_file", counted_digest)
+    entries = service.list_tree()
+    assert len(entries) == 80
+    assert calls <= service_module._DEFAULT_LIST_HASH_BUDGET
+    assert sum(entry.sha256 is not None for entry in entries) == service_module._DEFAULT_LIST_HASH_BUDGET
+
+
 def test_list_respects_query_filters(
     vault_service_factory: object,
     vault_api_client: object,

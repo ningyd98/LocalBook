@@ -24,7 +24,7 @@ AI 结构化错误额外携带 `meta: {prompt_version, model}`。
 | `DELETE /api/v1/vault/file` | 删除（必须 `expected_sha256`） | 400/404/409/503 |
 | `POST /api/v1/vault/file/move` | 移动/重命名（不覆盖目标） | 400/404/409/500/503 |
 | `POST /api/v1/vault/directory` | 新建目录（逐级补建，父目录须存在） | 400/404/409/503 |
-| `GET /api/v1/vault/resource?path=` | 只读原始 bytes（图片预览/附件下载） | 400/404/413/503 |
+| `GET /api/v1/vault/resource?path=` | 只读原始 bytes（图片预览/附件下载；音频支持单区间 `Range`） | 400/404/413/416/503 |
 
 示例：
 
@@ -65,6 +65,38 @@ symlink、越界路径一律拒绝；正文引用是相对当前笔记的 POSIX 
 保护；上传是用户直传旁路，不经过 Policy，`attachment_write` 对 Agent 仍
 永久拒绝。详见 [`vault-spec.md`](./vault-spec.md) §8.1。
 
+## 录音转写（本地工具）
+
+| 方法/路径 | 说明 | 主要错误 |
+|---|---|---|
+| `POST /api/v1/transcription` | 对 Vault 内的音频附件调用本机配置的 Whisper 兼容命令，返回纯文本 | 400/502/503/504 |
+
+请求体：`{"path":"notes/recording.m4a","language":"zh"}`；`language` 可省略，服务端
+会使用 `LOCALNOTE_TRANSCRIPTION__LANGUAGE`。默认命令是：
+
+```text
+whisper --model {model} --output_dir {output_dir} --output_format txt {input}
+```
+
+服务端不接受浏览器传入的命令，始终 `shell=False` 执行，并把音频复制到短生命周期临时目录。
+可通过 `LOCALNOTE_TRANSCRIPTION__COMMAND_TEMPLATE` 配置本地工具；模板支持
+`{input}`、`{output_dir}`、`{output}`、`{model}`、`{language}`。常用配置还包括
+`LOCALNOTE_TRANSCRIPTION__MODEL`、`...__TIMEOUT_SECONDS` 和 `...__MAX_OUTPUT_CHARS`。
+
+## Office / PDF 预览（本地转换）
+
+| 方法/路径 | 说明 | 主要错误 |
+|---|---|---|
+| `GET /api/v1/vault/document-preview?path=...` | PDF 直接流式返回；Word、PowerPoint、Excel、WPS/OpenDocument 等由本机 `dsh-doc` 转为临时 PDF 后返回 | 400/413/502/503/504 |
+
+工具栏的「插入文档」会把 `.doc/.docx/.ppt/.pptx/.xls/.xlsx/.pdf` 等文件上传到
+Vault，并在正文中生成相对 Markdown 引用。预览只在临时目录中转换，原始附件始终保留；
+导出时仍保留原始附件链接，不会偷偷改写源文件。
+
+默认转换命令为 `dsh-doc`，可通过 `LOCALNOTE_DOCUMENT_PREVIEW__COMMAND`、
+`...__TIMEOUT_SECONDS` 配置。服务端使用 `shell=False`，浏览器只接收
+`application/pdf` 预览流。
+
 ## 回收站（软删除）
 
 | 方法/路径 | 说明 |
@@ -97,14 +129,20 @@ health/Vault 读写/编辑器。
 
 | 方法/路径 | 说明 | 主要错误 |
 |---|---|---|
-| `GET /api/v1/graph?limit=&offset=&tag=&include_broken=` | 全局 Note/Tag 图（可选 tag 过滤，casefold） | 400/503 |
-| `GET /api/v1/graph/local/{note}?depth=&direction=&tag=&include_broken=` | root BFS 局部图（depth≤3；incoming 由 links 反推） | 400/404/503 |
-| `GET /api/v1/graph/tag/{tag}`（或 `?tag=`） | tag 作用域图（与全局 tag 过滤同语义） | 400/404/503 |
+| `GET /api/v1/graph?limit=&offset=&tag=&include_broken=&include_semantic=` | 全局 Note/Tag 图（可选 tag 过滤，casefold） | 400/503 |
+| `GET /api/v1/graph/local/{note}?depth=&direction=&tag=&include_broken=&include_semantic=` | root BFS 局部图（depth≤3；incoming 由 links 反推，并显示相近笔记） | 400/404/503 |
+| `GET /api/v1/graph/tag/{tag}?include_semantic=`（或 `?tag=`） | tag 作用域图（与全局 tag 过滤同语义） | 400/404/503 |
 
 响应：`{model:"note-tag-v1",scope,root,nodes,edges,page:{limit,offset,next_offset,
-total_nodes,total_edges,truncated},generated_at}`。nodes 按 `(type,id)`、edges 按
+total_nodes,total_edges,truncated},generated_at,semantic_status,semantic_covered_nodes}`。nodes 按 `(type,id)`、edges 按
 `(type,source,target,id)` 确定性排序；截断页只含端点在本页的边；broken 边
-`target=""`。图只读：不产生任何 SQLite 写入、不写正文。
+`target=""`。`include_semantic` 默认开启；`semantic` 边来自现有知识库向量，
+带 0–1 的 `score`，表示内容相近的候选，不等同于正文中的引用。仅使用与当前
+笔记 SHA、向量模型、维度和版本匹配的完整索引；缺少分块向量的笔记单独
+跳过，其余完整笔记仍返回候选。对每篇笔记的分块向量取归一化均值，要求
+余弦相似度至少 0.84 且互为前三近邻。单次范围超过 500
+篇笔记时返回 `semantic_status="limited"`，不生成候选；向量不可用或过期时
+也保留显式链接。图只读：不产生任何 SQLite 写入、不写正文。
 
 ## AI 状态与只读 workflow（Phase 0 + M6）
 
@@ -161,6 +199,57 @@ FTS5 + 向量混合检索（RRF，`k=60`）→ 可选 Link/Graph 第三路（**�
 并记入 `invalid_citations`）。RAG 故障返回 503 `rag_unavailable`，其余端点不受影响。
 详见 [`rag-architecture.md`](./rag-architecture.md)。
 
+## Reader API（ReadFlow - LocalBook 集成）
+
+| 方法/路径 | 说明 | 主要错误 |
+|---|---|---|
+| `POST /api/v1/reader/pair` | 设备配对（生成 6 位数字 token，5 分钟有效） | 400/503 |
+| `POST /api/v1/reader/register` | 设备注册（使用 token 完成配对，返回 JWT） | 400/404/503 |
+| `GET /api/v1/reader/status` | 设备状态（需要 JWT 认证） | 401/404/503 |
+| `POST /api/v1/reader/sync/push` | 推送同步操作（批量 1-100 条，需要 JWT 认证） | 400/401/503 |
+| `GET /api/v1/reader/sync/pull` | 拉取同步操作（游标分页，需要 JWT 认证） | 400/401/503 |
+| `GET /api/v1/reader/capabilities` | 服务端能力声明（AI/搜索状态） | 503 |
+| `POST /api/v1/reader/ask` | AI 问答；`scope=web` 使用已配置的 SearXNG JSON 搜索并验证 `[W1]` 来源，未配置返回 501 | 400/401/501/502/503 |
+| `POST /api/v1/reader/search` | 语义搜索（需要 JWT 认证，搜索服务不可用返回 503） | 400/401/503 |
+| `POST /api/v1/reader/sessions/{session_id}/import` | 导入阅读会话为 Markdown 文档（需要 JWT 认证） | 401/404/503 |
+
+认证流程：
+1. 客户端调用 `/pair` 获取 6 位数配对码。
+2. 用户在 LocalBook 的本地设置界面核对设备并批准该配对码；界面调用 `POST /api/v1/settings/reader/pairing/approve`。
+3. 客户端用配对码调用 `/register` 获取不含设备 ID 的不透明访问令牌；服务端只保存令牌哈希。
+4. 后续请求直连时使用 `Authorization: Bearer {token}`；反向代理占用 `Authorization` 时使用 `X-LocalBook-Reader-Token: {token}`。
+
+联网模式需由服务端管理员配置 `LOCALNOTE_WEB_SEARCH__BASE_URL`（SearXNG 实例根地址）并重启 LocalBook。后端调用其 `/search?q=...&format=json` 接口；若实例未启用 JSON 响应，会明确报搜索不可用。未配置时不会把普通模型回答伪装成联网回答。
+
+同步协议：
+- Push：客户端批量推送操作（创建/更新/删除 highlight/session/source/tag），每批 1-100 条
+- Pull：客户端用游标拉取服务端的操作队列，支持分页
+- 操作类型：`highlight`、`session`、`source`、`tag`
+- 操作动作：`create`、`update`、`delete`
+
+设备类型：`macos`、`ios`、`android`（JSON 中使用小写）
+
+Connector 集成（导入 Reader 数据到 LocalBook）：
+- `/sessions/{session_id}/import`：将阅读会话转化为 Markdown 文档
+- 文档路径：`Reading/YYYY/MM/标题.md`（按阅读时间组织）
+- 包含内容：source 元信息、highlights、notes、AI conversations
+- 自动触发 FTS5 全文索引和向量索引
+- Metadata 标记 `connector_type: reader`
+
+## 笔记导出
+
+把一篇笔记导出为**自包含**的文件：正文里的图片等附件会被内联，导出结果不依赖笔记库。
+
+| 方法/路径 | 说明 |
+|---|---|
+| `GET /api/v1/export/note?path=` | 清单：`markdown`（引用已改写为 Vault 相对 URL）+ 每个附件的 `data_uri`，供前端渲染后打印 PDF |
+| `GET /api/v1/export/markdown?path=` | 直接返回 `.md` 文件（附件内联为 `data:` URI），带 `Content-Disposition` |
+
+- **PDF 走浏览器打印管线**：前端把清单渲染成独立 HTML（含打印样式）后调用 `print()`，用户在打印对话框选「另存为 PDF」。服务端不引入任何 PDF 渲染依赖，文本可选、矢量清晰。
+- **引用解析**：`![](相对路径)` 按笔记所在目录解析、`/路径` 按库根解析、`![[图片.png]]` 走全库 basename 解析；`<...>` 包裹与 `%20` 转义都支持；代码块与行内代码**永不改写**；外部 URL 原样保留。
+- **失败降级**：目标不存在、越界（`..`）、超限（`LOCALNOTE_EXPORT__*`）都不会让导出失败——该附件保持原始引用并出现在 `warnings` 里，`truncated` 标记是否发生过截断。
+- 只读接口：不写 Vault、不写派生库。错误码 `note_not_markdown` / `note_not_utf8`（400），沿用 Vault 的 `not_found` / `path_traversal` 等。
+
 ## 受控 Agent / Job / History（M7）
 
 | 方法/路径 | 说明 |
@@ -193,9 +282,12 @@ FTS5 + 向量混合检索（RRF，`k=60`）→ 可选 Link/Graph 第三路（**�
 | `LOCALNOTE_VAULT__ROOT` / `LOCALNOTE_VAULT_ROOT` | 空 | Vault 根目录（必须已存在）。未配置 ⇒ `Not configured`，Vault API 503 |
 | `LOCALNOTE_VAULT__WATCHER_ENABLED` / `..._VAULT_WATCHER_ENABLED` | `true` | 是否启动 watcher（`false` ⇒ `disabled`） |
 | `LOCALNOTE_VAULT__WATCHER_DEBOUNCE_MS` | `200` | watcher 事件去抖窗口（ms） |
-| `LOCALNOTE_VAULT__MAX_FILE_BYTES` | `52428800` | 单文件读写上限（超出 ⇒ 413 `file_too_large`） |
+| `LOCALNOTE_VAULT__MAX_FILE_BYTES` | `209715200` | 单文件读写上限（默认 200 MiB；超出 ⇒ 413 `file_too_large`） |
 | `LOCALNOTE_VAULT__TRASH_RETENTION_DAYS` | `30` | 回收站保留天数（1–3650） |
 | `LOCALNOTE_AI__BASE_URL` / `LOCALNOTE_OMLX_BASE_URL` | `http://127.0.0.1:8000/v1` | oMLX OpenAI 兼容地址；置空 ⇒ `not_configured` |
+| `LOCALNOTE_WEB_SEARCH__BASE_URL` | 空 | ReadFlow 联网模式使用的 SearXNG 根地址；需启用 JSON 搜索接口 |
+| `LOCALNOTE_WEB_SEARCH__TIMEOUT_SECONDS` | `8` | 搜索服务请求超时（1–30 秒） |
+| `LOCALNOTE_WEB_SEARCH__MAX_RESPONSE_BYTES` | `512000` | 搜索 JSON 响应大小上限 |
 | `LOCALNOTE_AI__API_KEY` | 空 | 需要认证的 OpenAI 兼容服务使用；以 `Authorization: Bearer <key>` 发送。仅写入（接口只回显 `api_key_set`），保存在实例配置文件（0600） |
 | `LOCALNOTE_AI__CONNECT_TIMEOUT_SECONDS` | `0.5` | AI 探测连接超时 |
 | `LOCALNOTE_AI__REQUEST_TIMEOUT_SECONDS` | `60` | AI 生成超时。本地模型一次推理常需数秒到数十秒；早期默认 `2.0` 会让 `/ai/status` 显示 connected 而每次生成都返回 `ai_timeout`，故放宽到 60（上限 120） |
@@ -223,6 +315,11 @@ FTS5 + 向量混合检索（RRF，`k=60`）→ 可选 Link/Graph 第三路（**�
 | `LOCALNOTE_GRAPH__DEFAULT_DEPTH` / `MAX_DEPTH` | `1` / `3` | local BFS 默认/最大深度（M5） |
 | `LOCALNOTE_GRAPH__DEFAULT_INCLUDE_BROKEN` | `true` | 是否默认输出 dangling broken/ambiguous 边（M5） |
 | `LOCALNOTE_GRAPH__MAX_EDGES` | `2000` | 单响应边上限（超出置 `truncated`，M5） |
+| `LOCALNOTE_EXPORT__MAX_ATTACHMENT_BYTES` | `10485760` | 单个附件内联上限（10 MiB）；超出则保留原始引用并记入 `warnings` |
+| `LOCALNOTE_EXPORT__MAX_TOTAL_BYTES` | `33554432` | 单次导出内联总上限（32 MiB）；超出后停止内联并置 `truncated` |
+| `LOCALNOTE_DOCUMENT_PREVIEW__ENABLED` | `true` | 是否启用 Office/PDF 预览 |
+| `LOCALNOTE_DOCUMENT_PREVIEW__COMMAND` | `dsh-doc` | 本地文档转 PDF 工具 |
+| `LOCALNOTE_DOCUMENT_PREVIEW__TIMEOUT_SECONDS` / `MAX_OUTPUT_BYTES` | `120` / `104857600` | 转换超时 / 预览 PDF 大小上限 |
 | `VITE_PORT` / `VITE_API_PROXY_TARGET` | `5173` / `http://127.0.0.1:3780` | Vite 端口 / `/api` proxy 目标 |
 
 规则：嵌套变量优先于扁平别名（如 `LOCALNOTE_VAULT__ROOT` 与
@@ -236,4 +333,8 @@ FTS5 + 向量混合检索（RRF，`k=60`）→ 可选 Link/Graph 第三路（**�
 `settings_local_only`、`settings_conflict`、`ai_profile_active`、
 `ai_profile_last`、`ai_profiles_full`、`capability_unavailable`、
 `scheduler_disabled`、`recovery_required`、`rag_unavailable`、
+`note_not_markdown`、`note_not_utf8`、`transcription_disabled`、
+`transcription_unavailable`、`not_audio`、`transcription_failed`、`transcription_timeout`、
+`document_preview_disabled`、`document_preview_unavailable`、`not_previewable`、
+`document_preview_failed`、`document_preview_timeout`、`document_preview_too_large`、
 `internal_error`。

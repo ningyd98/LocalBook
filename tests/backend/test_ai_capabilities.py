@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from server.ai.capabilities import aggregate_capabilities, resolve_chat_model
+from server.ai.capabilities import (
+    aggregate_capabilities,
+    resolve_chat_model,
+    resolve_chat_model_for_request,
+)
 from server.ai.errors import AIError, AIErrorCode
 from server.ai.schemas import AICapabilities, DiscoveredModel
 
@@ -73,3 +77,34 @@ def test_custom_qwen_pattern_is_honored() -> None:
     models = [_model("Qwen3.5-32B-Instruct", chat=True), _model("Qwen3.5-4B-Instruct", chat=True)]
     pattern = r"qwen3\.?5[-_ ]?32b"
     assert resolve_chat_model(models, "auto", pattern) == "Qwen3.5-32B-Instruct"
+
+
+async def test_explicit_http_model_skips_catalog_request() -> None:
+    class Adapter:
+        base_url = "https://example.invalid/v1"
+        api_key = None
+        transport = None
+
+        async def list_models(self):
+            raise AssertionError("explicit HTTP model should not discover again")
+
+    assert await resolve_chat_model_for_request(Adapter(), "chosen-chat") == "chosen-chat"
+
+
+async def test_auto_http_model_reuses_catalog_within_ttl() -> None:
+    class Adapter:
+        base_url = "https://cache-probe.invalid/v1"
+        api_key = "test-key"
+        transport = None
+
+        def __init__(self):
+            self.calls = 0
+
+        async def list_models(self):
+            self.calls += 1
+            return [_model("chat-a", chat=True)]
+
+    adapter = Adapter()
+    assert await resolve_chat_model_for_request(adapter, "auto") == "chat-a"
+    assert await resolve_chat_model_for_request(adapter, "auto") == "chat-a"
+    assert adapter.calls == 1

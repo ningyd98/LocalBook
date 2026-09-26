@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-checks:
+    name: Linux locked dependencies and core checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install Python dependencies from lock
+        run: uv sync --locked --dev
+      - name: Install Node dependencies from lock
+        run: pnpm install --frozen-lockfile
+      - name: Run repository checks
+        run: bash scripts/check.sh
+      - name: Audit Python dependencies
+        run: |
+          uv export --locked --no-hashes --no-emit-project --output-file "$RUNNER_TEMP/localbook-requirements.txt"
+          uvx --from pip-audit==2.10.1 pip-audit --requirement "$RUNNER_TEMP/localbook-requirements.txt"
+      - name: Audit Node dependencies
+        run: pnpm audit --audit-level high
+        continue-on-error: true
+
+  macos-reader-build:
+    name: macOS ReadFlow platform build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select supported Xcode
+        run: xcodebuild -version
+      - name: Build ReadFlow
+        run: swift build --package-path ReadFlow --configuration release --disable-automatic-resolution

@@ -66,7 +66,7 @@ function makeResponse(overrides: Partial<RagQueryResponse> = {}): RagQueryRespon
       degraded: [],
     },
     model: "Qwen3.5-4B",
-    prompt_version: "rag_answer@m14.1",
+    prompt_version: "rag_answer@m14.2",
     degraded: [],
     invalid_citations: [],
     generated_at: "2026-09-10T10:00:01Z",
@@ -110,7 +110,7 @@ beforeEach(() => {
     tabs: [], activePath: "notes/a.md", sessions: {},
     relations: { status: "idle", path: null, outgoing: null, backlinks: null, brokenCount: 0, error: null },
     search: { status: "idle", query: "", response: null, error: null },
-    graph: { status: "idle", scope: "global", note: null, depth: 1, direction: "both", tag: null, includeBroken: true, limit: 500, offset: 0, response: null, error: null, requestVersion: 0 },
+    graph: { status: "idle", scope: "global", note: null, depth: 1, direction: "both", tag: null, includeBroken: true, includeSemantic: true, limit: 500, offset: 0, response: null, error: null, requestVersion: 0 },
     ai: { status: "idle", action: null, notePath: null, response: null, error: null, requestVersion: 0 },
     theme: "light", splitRatio: 50,
   });

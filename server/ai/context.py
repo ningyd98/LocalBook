@@ -64,22 +64,16 @@ class ContextBuilder:
             if source.heading:
                 lines = text.splitlines()
                 marker = next(
-                    (
-                        i
-                        for i, line in enumerate(lines)
-                        if line.lstrip().startswith("#")
-                        and line.lstrip().lstrip("#").strip() == source.heading
-                    ),
-                    None,
+                    (i for i, line in enumerate(lines)
+                     if line.lstrip().startswith("#")
+                     and line.lstrip().lstrip("#").strip() == source.heading), None
                 )
                 if marker is not None:
                     level = len(lines[marker]) - len(lines[marker].lstrip())
                     end = len(lines)
                     for i in range(marker + 1, len(lines)):
-                        if (
-                            lines[i].lstrip().startswith("#")
-                            and len(lines[i]) - len(lines[i].lstrip()) <= level
-                        ):
+                        if (lines[i].lstrip().startswith("#")
+                                and len(lines[i]) - len(lines[i].lstrip()) <= level):
                             end = i
                             break
                     text = "\n".join(lines[marker:end])
@@ -91,11 +85,9 @@ class ContextBuilder:
                     continue
                 text = text[:remaining]
                 truncated = True
-            item = source.model_copy(update={"text": text, "truncated": truncated})
-            unique.append(item)
+            unique.append(source.model_copy(update={"text": text, "truncated": truncated}))
             total += len(text)
             if len(unique) >= self.max_notes:
                 break
-        return ContextBundle(
-            notes=unique, total_chars=total, omitted_notes=max(0, len(sources) - len(unique))
-        )
+        return ContextBundle(notes=unique, total_chars=total,
+                             omitted_notes=max(0, len(sources) - len(unique)))

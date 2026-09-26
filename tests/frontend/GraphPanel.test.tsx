@@ -37,7 +37,7 @@ function resetStore() {
     tabs: [], activePath: null, sessions: {},
     relations: { status: "idle", path: null, outgoing: null, backlinks: null, brokenCount: 0, error: null },
     search: { status: "idle", query: "", response: null, error: null },
-    graph: { status: "idle", scope: "global", note: null, depth: 1, direction: "both", tag: null, includeBroken: true, limit: 500, offset: 0, response: null, error: null, requestVersion: 0 },
+    graph: { status: "idle", scope: "global", note: null, depth: 1, direction: "both", tag: null, includeBroken: true, includeSemantic: true, limit: 500, offset: 0, response: null, error: null, requestVersion: 0 },
     theme: "light", splitRatio: 50,
   });
 }
@@ -69,6 +69,50 @@ describe("GraphPanel", () => {
     await screen.findByText(/nodes · .* edges/);
     expect(fetchGraph).toHaveBeenCalledWith({ limit: 500, offset: 0, include_broken: true });
     expect(screen.getByRole("region", { name: /Graph fallback view/ })).toBeTruthy();
+  });
+
+  it("focuses a sparse global graph on connected notes and can reveal the isolated notes", async () => {
+    const a = { id: "note:a", type: "note" as const, label: "A", path: "a.md", title: "A", tag: null, tag_folded: null };
+    const b = { id: "note:b", type: "note" as const, label: "B", path: "b.md", title: "B", tag: null, tag_folded: null };
+    const c = { id: "note:c", type: "note" as const, label: "Isolated C", path: "c.md", title: "C", tag: null, tag_folded: null };
+    const d = { id: "note:d", type: "note" as const, label: "Isolated D", path: "d.md", title: "D", tag: null, tag_folded: null };
+    const payload: GraphResponse = {
+      ...baseResponse(),
+      nodes: [a, b, c, d],
+      edges: [{ ...baseResponse().edges[0]!, id: "semantic:a:b", source: a.id, target: b.id, type: "semantic", directed: false, score: 0.91 }],
+      semantic_status: "ready",
+      semantic_covered_nodes: 4,
+      page: { limit: 500, offset: 0, next_offset: null, total_nodes: 4, total_edges: 1, truncated: false },
+    };
+    configureWorkspaceApi(apiWith(vi.fn(async () => payload)));
+    render(<GraphPanel onOpenNote={vi.fn()} onClose={vi.fn()} />);
+
+    await screen.findByText(/4 nodes · 1 edges/);
+    expect(screen.getByRole("button", { name: "A" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "B" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Isolated C" })).toBeNull();
+    expect(screen.getByText(/2 isolated notes/i)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: /show all notes/i }));
+    expect(screen.getByRole("button", { name: "Isolated C" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Isolated D" })).toBeTruthy();
+  });
+
+  it("lets the reader turn off content similarity candidates", async () => {
+    const fetchGraph = vi.fn(async () => baseResponse());
+    configureWorkspaceApi(apiWith(fetchGraph));
+    render(<GraphPanel onOpenNote={vi.fn()} onClose={vi.fn()} />);
+    await screen.findByText(/nodes · .* edges/);
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "Include content similarities" }));
+    await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() =>
+      expect(fetchGraph).toHaveBeenLastCalledWith(
+        expect.objectContaining({ include_semantic: false }),
+      ),
+    );
+    expect(screen.getByText(/Content similarities are off/i)).toBeTruthy();
   });
 
   it("switches scope to local and fetches around the typed note", async () => {

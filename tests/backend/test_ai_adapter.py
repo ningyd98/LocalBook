@@ -74,7 +74,7 @@ async def test_chat_payload_and_result_shape() -> None:
     assert body["model"] == "Qwen3.5-4B-Instruct"
     assert [m["role"] for m in body["messages"]] == ["system", "user"]
     assert body["temperature"] == 0.2
-    assert body["max_output_tokens"] == 700  # S1: settings value reaches the wire
+    assert body["max_tokens"] == 700  # S1: settings value reaches the wire
     assert body["response_format"]["type"] == "json_schema"
     assert result.content == '{"answer": "ok"}'
     assert result.model == "upstream-model"
@@ -179,7 +179,7 @@ async def test_oversized_response_is_rejected() -> None:
     assert info.value.kind == "invalid_response"
 
 
-async def test_response_format_400_falls_back_to_plain_json_once() -> None:
+async def test_response_format_400_falls_back_with_schema_in_prompt() -> None:
     requests: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -187,6 +187,8 @@ async def test_response_format_400_falls_back_to_plain_json_once() -> None:
         requests.append(body)
         if "response_format" in body:
             return httpx.Response(400, json={"error": "response_format unsupported"})
+        assert "JSON Schema:" in body["messages"][0]["content"]
+        assert '"answer"' in body["messages"][0]["content"]
         return httpx.Response(200, json=_chat_response('{"answer": "plain"}'))
 
     adapter = _adapter(handler)
@@ -198,8 +200,11 @@ async def test_response_format_400_falls_back_to_plain_json_once() -> None:
         timeout_seconds=1,
     )
     assert result.content == '{"answer": "plain"}'
-    assert len(requests) == 2
-    assert "response_format" not in requests[1]
+    assert len(requests) == 3
+    assert requests[1]["response_format"] == {"type": "json_object"}
+    assert "JSON Schema:" in requests[1]["messages"][0]["content"]
+    assert "response_format" not in requests[2]
+    assert "JSON Schema:" in requests[2]["messages"][0]["content"]
 
 
 async def test_response_format_400_does_not_fallback_when_absent() -> None:

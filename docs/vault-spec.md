@@ -97,6 +97,11 @@
   `409 already_exists`），父目录必须已存在（服务不做递归 mkdir）。
 - move/rename 不覆盖目标（已存在 → `already_exists`）、同文件系统
   （跨设备 → `atomic_write_failed`，禁止 copy-delete fallback）。
+- **写请求还要带页面会话**（`X-LocalNote-Vault-Session`）：后端进程重启会轮换
+  `vault_session_id` 而不改变笔记库，旧页面此时写 → `428 vault_session_required`，
+  带过期会话读 → `vault_session_changed`。前端按「根目录未变 = 同一笔记库」自动重绑
+  新会话并重放一次**被服务端拒绝**的请求（已返回 2xx 的写响应绝不重放，避免重复写入）；
+  根目录真的变了则不改绑，仍由工作空间按过期页面处理。
 - Undo/History/Recovery（M7 的 diff/恢复编排）尚未实现。
 
 ## 8. REST 契约与错误体（M1 已实现）
@@ -155,7 +160,7 @@ root-relative POSIX 目录（空串表示 Vault 根），由前端按入口决�
 - 传输：单文件 ≤10 MiB（`ATTACHMENT_JSON_MAX_BYTES`）走 JSON
   `content_base64`；>10 MiB 走 multipart 流式（服务端按 1 MiB 分块读取并
   增量 SHA-256，超限立即清理临时文件）；硬上限沿用
-  `vault.max_file_bytes`（`LOCALNOTE_VAULT_MAX_FILE_BYTES`，默认 50 MiB）。
+  `vault.max_file_bytes`（`LOCALNOTE_VAULT_MAX_FILE_BYTES`，默认 200 MiB）。
 - 附件上传是**用户直传旁路**，不经过 `PolicyEngine`；`attachment_write` 对
   Agent/受控写路径仍永久 deny（回归测试锁定）。
 

@@ -11,6 +11,7 @@ export interface GraphControlsOverrides {
   depth: number;
   direction: "both" | "outgoing" | "incoming";
   includeBroken: boolean;
+  includeSemantic: boolean;
   limit: number;
   offset: number;
 }
@@ -38,6 +39,7 @@ export function GraphControls({
   const [depth, setDepth] = useState<number>(initial.depth);
   const [direction, setDirection] = useState<"both" | "outgoing" | "incoming">(initial.direction);
   const [includeBroken, setIncludeBroken] = useState<boolean>(initial.includeBroken);
+  const [includeSemantic, setIncludeSemantic] = useState<boolean>(initial.includeSemantic ?? true);
   const [limit, setLimit] = useState<number>(initial.limit);
 
   const submit = (event?: { preventDefault: () => void }) => {
@@ -49,6 +51,7 @@ export function GraphControls({
       depth,
       direction,
       includeBroken,
+      includeSemantic,
       limit,
       offset: 0,
     });
@@ -149,6 +152,15 @@ export function GraphControls({
           onChange={(event) => setIncludeBroken(event.target.checked)}
         />
         <span>{tr("包含失效链接","Include broken")}</span>
+      </label>
+      <label className="graph-control graph-control-check">
+        <input
+          type="checkbox"
+          aria-label={tr("显示内容相近的候选关联", "Include content similarities")}
+          checked={includeSemantic}
+          onChange={(event) => setIncludeSemantic(event.target.checked)}
+        />
+        <span>{tr("内容相近", "Content similarities")}</span>
       </label>
       <Button type="submit" disabled={loading} className="graph-control-apply">
         {loading ? tr("加载中…","Loading…") : tr("应用筛选","Apply")}

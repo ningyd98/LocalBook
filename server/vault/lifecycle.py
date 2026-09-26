@@ -1,6 +1,6 @@
 """Application lifecycle wiring for the Vault service, index and watcher.
 
-Startup order is fixed by PLAN-M3 §5.3/§5.4 and extended by PLAN-M4 §5.7:
+The synchronous startup order is fixed by PLAN-M3 §5.3/§5.4 and extended by PLAN-M4 §5.7:
 
 1. create the ``VaultService`` without starting its watcher;
 2. initialise the deletable ``.localnote`` derived state (``state.json``);
@@ -19,11 +19,16 @@ opened is retained as a safe domain error so Vault endpoints return 503, while
 health and unrelated API routes continue to start.  An index build failure
 only marks the index unavailable (503 on metadata/links/search); Vault I/O and
 editing are never blocked by it.
+
+The ASGI runtime defers the full index scan to a background thread. Its
+watcher starts before the scan and index locking serializes any events that
+arrive during it. Vault switches retain synchronous preparation.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 from ..config import IndexSettings, RagSettings, VaultSettings
@@ -58,8 +63,19 @@ class VaultLifecycle:
         # unavailable, or when no embedding provider could be built.
         self.rag_stack = None
         self._note_text_cap = note_text_cap
+        self._index_thread: threading.Thread | None = None
+        self._background_pending: DerivedIndexService | None = None
+        self._stopping = threading.Event()
+        self._rag_lock = threading.RLock()
 
-    def startup(self, *, start_watcher: bool = True) -> VaultService | None:
+    @property
+    def index_building(self) -> bool:
+        thread = self._index_thread
+        return thread is not None and thread.is_alive()
+
+    def startup(
+        self, *, start_watcher: bool = True, background_index: bool = False
+    ) -> VaultService | None:
         if self.settings.root is None:
             self.service = None
             self.error = VaultNotConfigured()
@@ -67,8 +83,7 @@ class VaultLifecycle:
             return None
         try:
             service = VaultService.from_settings(self.settings)
-            # Watcher is created but deliberately NOT started until the index
-            # has been built (PLAN-M3 §5.3 data flow).
+            # The watcher is created now and started after its callback is set.
             service.initialize(start_watcher=False)
         except VaultError as exc:
             self.service = None
@@ -96,19 +111,35 @@ class VaultLifecycle:
             busy_timeout_ms=index_settings.busy_timeout_ms,
         )
         self.index_service = index
-        try:
-            index.rebuild()
-        except Exception:
-            # A scan failure leaves the index "unavailable" (503 on the M3
-            # read endpoints) and never disables Vault reads/writes.
-            logger.exception("derived index startup scan failed")
-        self._start_rag(service, index)
+        self._stopping.clear()
+        if not background_index:
+            self._refresh_index(index)
+        self._start_rag(service, index, rebuild_on_startup=not background_index)
         try:
             service.set_event_callback(self._event_callback(index))
             if start_watcher:
                 service.start()
         except Exception:
             logger.exception("vault watcher start failed")
+        if background_index:
+            if service.watcher_status == "running":
+                # Runtime starts the scan after scheduler recovery has read
+                # the shared index database, immediately before lifespan yields.
+                self._background_pending = index
+            else:
+                # Without an active watcher, writes during an asynchronous
+                # scan could be missed. Preserve the synchronous preparation
+                # contract for disabled/unavailable watcher installations.
+                self._refresh_index(index)
+                if (
+                    self.rag_stack is not None
+                    and self.rag_settings
+                    and self.rag_settings.index_on_startup
+                ):
+                    try:
+                        self.rag_stack.index.rebuild()
+                    except Exception:
+                        logger.exception("rag startup indexing failed")
         logger.info(
             "vault initialized watcher_status=%s index_state=%s db=%s",
             service.watcher_status,
@@ -117,7 +148,46 @@ class VaultLifecycle:
         )
         return service
 
-    def _start_rag(self, service: VaultService, index: DerivedIndexService) -> None:
+    def start_background_index(self) -> None:
+        index = self._background_pending
+        self._background_pending = None
+        if index is None or self._stopping.is_set():
+            return
+        self._index_thread = threading.Thread(
+            target=self._finish_background_index,
+            args=(index,),
+            name="localnote-startup-index",
+            daemon=True,
+        )
+        self._index_thread.start()
+
+    @staticmethod
+    def _refresh_index(index: DerivedIndexService) -> bool:
+        try:
+            index.refresh()
+            return True
+        except Exception:
+            # A failed derived scan must not prevent editing or health checks.
+            logger.exception("derived index startup scan failed")
+            return False
+
+    def _finish_background_index(self, index: DerivedIndexService) -> None:
+        if not self._refresh_index(index) or self._stopping.is_set():
+            return
+        # RAG's optional full scan can also take minutes; keep it behind the
+        # listener and serialize it with a concurrent RAG configuration swap.
+        with self._rag_lock:
+            stack = self.rag_stack
+            if stack is not None and self.rag_settings and self.rag_settings.index_on_startup:
+                try:
+                    stack.index.rebuild()
+                except Exception:
+                    logger.exception("rag startup indexing failed")
+
+    def _start_rag(
+        self, service: VaultService, index: DerivedIndexService,
+        *, rebuild_on_startup: bool = True,
+    ) -> None:
         """Build the M14 RAG stack over the shared derived database.
 
         RAG is strictly additive derived data: any failure here logs and leaves
@@ -141,7 +211,7 @@ class VaultLifecycle:
             self.rag_stack = None
             logger.exception("rag stack initialization failed")
             return
-        if bool(getattr(settings, "index_on_startup", False)):
+        if rebuild_on_startup and bool(getattr(settings, "index_on_startup", False)):
             try:
                 self.rag_stack.index.rebuild()
             except Exception:
@@ -159,38 +229,42 @@ class VaultLifecycle:
         if service is None:
             self.rag_settings = settings
             return
-        old = self.rag_stack
-        self.rag_settings = settings
-        self.rag_stack = None
-        index = self.index_service
-        try:
+        with self._rag_lock:
+            old = self.rag_stack
+            self.rag_settings = settings
+            self.rag_stack = None
+            index = self.index_service
+            try:
+                if index is not None:
+                    self._start_rag(
+                        service, index,
+                        rebuild_on_startup=not self.index_building,
+                    )
+            finally:
+                if old is not None:
+                    try:
+                        old.close()
+                    except Exception:  # pragma: no cover - defensive
+                        logger.exception("old rag stack cleanup failed")
             if index is not None:
-                self._start_rag(service, index)
-        finally:
-            if old is not None:
-                try:
-                    old.close()
-                except Exception:  # pragma: no cover - defensive
-                    logger.exception("old rag stack cleanup failed")
-        if index is not None:
-            service.set_event_callback(self._event_callback(index))
+                service.set_event_callback(self._event_callback(index))
 
     def _event_callback(self, index: DerivedIndexService):
         """Fan one watcher event out to the M4 index and the M14 RAG index."""
-        rag_stack = self.rag_stack
-        if rag_stack is None:
-            return index.handle_event
-
         def callback(event) -> None:
             index.handle_event(event)
-            try:
-                rag_stack.index.handle_event(event)
-            except Exception:  # pragma: no cover - watcher thread must not die
-                logger.exception("rag incremental indexing failed kind=%s", event.kind)
+            with self._rag_lock:
+                stack = self.rag_stack
+                if stack is not None:
+                    try:
+                        stack.index.handle_event(event)
+                    except Exception:  # pragma: no cover - watcher thread must not die
+                        logger.exception("rag incremental indexing failed kind=%s", event.kind)
 
         return callback
 
     def shutdown(self) -> None:
+        self._stopping.set()
         service = self.service
         if service is None:
             return
@@ -201,6 +275,11 @@ class VaultLifecycle:
             # methods already make a best effort to flush/join the watcher.
             logger.exception("vault shutdown encountered an error")
         finally:
+            # The scan owns the index connection; do not close it underneath
+            # an active transaction or RAG embedding pass.
+            if self._index_thread is not None:
+                self._index_thread.join()
+                self._index_thread = None
             if self.rag_stack is not None:
                 try:
                     self.rag_stack.close()

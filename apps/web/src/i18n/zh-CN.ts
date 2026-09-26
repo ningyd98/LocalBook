@@ -8,6 +8,7 @@ export const zhCN = {
     files: "文件",
     search: "搜索",
     graph: "图谱",
+    outline: "目录",
     ai: "AI助手",
     history: "历史记录",
     settings: "设置",
@@ -73,6 +74,13 @@ export const zhCN = {
     previewFailed: "预览加载失败",
     noEditableNote: "请先打开一个可编辑的 Markdown 笔记",
     loading: "正在加载…",
+    insertRecording: "插入录音",
+    transcribe: "转文字并插入当前笔记",
+    transcribing: "转写中…",
+    transcript: "转写结果",
+    transcriptionFailed: "转写失败，请检查本地转写工具配置。",
+    transcriptionUnavailable: "本地转写工具不可用，请安装 Whisper 或配置命令。",
+    notAudio: "所选文件不是录音文件。",
   },
 
   editor: {
@@ -91,6 +99,18 @@ export const zhCN = {
     h5: "五级标题",
     h6: "六级标题",
     plain: "正文（取消标题）",
+  },
+
+  // 文字格式工具条与右键菜单
+  format: {
+    toolbar: "文字格式",
+    bold: "加粗（Ctrl+B）",
+    italic: "斜体（Ctrl+I）",
+    highlight: "高亮（Ctrl+Shift+H）",
+    color: "文字颜色",
+    clear: "清除格式",
+    table: "插入表格",
+    menu: "格式与插入",
   },
 
   // 冲突提示

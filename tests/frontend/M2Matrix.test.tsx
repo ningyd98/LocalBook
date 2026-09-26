@@ -391,6 +391,19 @@ describe("M2 B3 workspace UI matrix", () => {
     expect(useWorkspaceStore.getState().closeTab("a.md", () => false)).toBe(true);
   });
 
+  it("FileTree supports roving focus and tree arrow navigation", async () => {
+    render(<FileTree entries={entries} expanded={["docs"]} onToggle={vi.fn()} onOpen={vi.fn()} />);
+    const rows = screen.getAllByRole("treeitem");
+    expect(rows.filter(row => row.tabIndex === 0)).toHaveLength(1);
+    rows[0]!.focus();
+    await userEvent.keyboard("{ArrowDown}");
+    expect(rows[1]).toHaveFocus();
+    await userEvent.keyboard("{End}");
+    expect(rows.at(-1)).toHaveFocus();
+    await userEvent.keyboard("{Home}");
+    expect(rows[0]).toHaveFocus();
+  });
+
   it("FileTree expands by default and collapses through the toggle (controlled props)", async () => {
     const open = vi.fn(); const toggle = vi.fn();
     const { rerender } = render(<FileTree entries={entries} expanded={["docs"]} onToggle={toggle} onOpen={open} />);

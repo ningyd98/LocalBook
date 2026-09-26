@@ -1,6 +1,6 @@
 [project]
 name = "localnote-server"
-version = "1.1.0"
+version = "1.3.0"
 description = "LocalNote — local-first Markdown note server: FastAPI backend with byte-faithful Vault I/O, SQLite derived index, graph, controlled AI agents and local-first RAG."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -27,6 +27,10 @@ dependencies = [
     # Starlette spools small parts in memory and large parts to disk; the
     # service only ever reads bounded chunks from the UploadFile stream.
     "python-multipart>=0.0.9,<1",
+    # Bonjour/mDNS service discovery (ReadFlow P1.3): zeroconf advertises
+    # LocalBook on the local network so Reader clients can discover it
+    # automatically. The service degrades gracefully if the import fails.
+    "zeroconf>=0.132,<1",
 ]
 
 [project.optional-dependencies]
@@ -53,8 +57,13 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["server*"]
 
+[tool.setuptools.package-data]
+"server.ai" = ["prompts/*.md", "profiles/*.md"]
+"server.rag" = ["prompts/*.md"]
+"server.reader" = ["migrations/*.sql", "migrations/*.md"]
+
 [tool.pytest.ini_options]
-testpaths = ["tests/backend"]
+testpaths = ["tests/backend", "tests/rag", "server/reader/tests", "tests/integration"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
@@ -66,4 +75,7 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
+# Complete Ruff rule set remains configured for production code. The check script
+# gates syntax-critical E4/E7/E9 while historical debt (E501/I/UP and specific
+# F/B findings) is addressed. No rules are globally ignored.
 select = ["E", "F", "I", "UP", "B"]

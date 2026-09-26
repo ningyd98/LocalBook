@@ -18,8 +18,10 @@ Grounding rules enforced here (never delegated to the model):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -73,7 +75,7 @@ class RagService:
         retriever: HybridRetriever,
         context_builder: RagContextBuilder | None = None,
         generate: GenerateCallable | None = None,
-        prompt_version: str = "rag_answer@m14.1",
+        prompt_version: str = "rag_answer@m14.2",
         context_top_k: int = 6,
         require_citation: bool = True,
     ) -> None:
@@ -198,6 +200,7 @@ class RagService:
         rerank: bool | None = None,
         include_debug: bool = False,
     ) -> RagQueryResponse:
+        request_started = time.perf_counter()
         _validate_or_raise(query)
         if not self._index.enabled:
             stats = RetrievalStats(degraded=["rag_disabled"])
@@ -212,8 +215,12 @@ class RagService:
             )
 
         use_reranker = self._retriever.reranker_enabled if rerank is None else bool(rerank)
-        outcome = self._retrieve(
-            query, top_k=top_k, include_debug=include_debug, rerank=use_reranker
+        outcome = await asyncio.to_thread(
+            self._retrieve,
+            query,
+            top_k=top_k,
+            include_debug=include_debug,
+            rerank=use_reranker,
         )
         stats = outcome.stats
         results = outcome.results
@@ -271,6 +278,7 @@ class RagService:
                 _source_to_wire(source, None) for source in pack.sources
             ]
 
+        stats.total_ms = round((time.perf_counter() - request_started) * 1000.0, 3)
         return RagQueryResponse(
             query=query,
             answer=answer,
@@ -326,7 +334,9 @@ class RagService:
         if self._generate is None:
             return None, "", [], ["generation_unavailable"]
         system = _load_answer_prompt()
+        language = _response_language_instruction(query, pack)
         user = (
+            f"Output language requirement: {language}\n\n"
             f"Question: {query}\n\n"
             f"Evidence:\n{render_evidence_pack(pack)}\n\n"
             "Answer using only the evidence above."
@@ -360,6 +370,50 @@ class RagService:
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
+
+
+_LANGUAGE_NOISE_RE = re.compile(r"```[\s\S]*?```|`[^`]*`|https?://\S+")
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_LATIN_RE = re.compile(r"[A-Za-z]")
+
+
+def _language_counts(text: str) -> tuple[int, int]:
+    """Count natural-language CJK and Latin letters, ignoring code/URLs."""
+    clean = _LANGUAGE_NOISE_RE.sub(" ", text or "")
+    return len(_CJK_RE.findall(clean)), len(_LATIN_RE.findall(clean))
+
+
+def _response_language_instruction(query: str, pack: EvidencePack) -> str:
+    """Choose a concrete output-language hint from evidence before the query.
+
+    The model should follow the language of the retrieved notes, not the language
+    used by this prompt or by a UI label.  The explicit hint is intentionally
+    computed here as well as described in the system prompt: it makes the
+    preference observable in the actual user message and reduces English drift
+    when an English query is used against Chinese notes.
+    """
+    evidence_text = "\n".join(source.content for source in pack.sources)
+    evidence_cjk, evidence_latin = _language_counts(evidence_text)
+    # Chinese prose has a much higher information density per character than
+    # English prose.  A 2:1 allowance keeps Chinese notes with product names,
+    # acronyms, and Markdown syntax classified as Chinese.
+    if evidence_cjk >= 4 and evidence_cjk * 2 >= evidence_latin:
+        return (
+            "Simplified Chinese (简体中文); write all explanatory prose in Chinese "
+            "and do not translate the Chinese evidence into English."
+        )
+    if evidence_latin >= 8 and evidence_latin >= evidence_cjk * 2:
+        return "English; write all explanatory prose in English."
+
+    query_cjk, query_latin = _language_counts(query)
+    if query_cjk > query_latin:
+        return "Chinese (prefer Simplified Chinese); keep all explanatory prose in Chinese."
+    if query_latin > query_cjk:
+        return "English; keep all explanatory prose in English."
+    return (
+        "the dominant natural language of the evidence; "
+        "if the evidence is mostly Chinese, use Simplified Chinese"
+    )
 
 
 def _validate_or_raise(query: str) -> None:
@@ -411,6 +465,7 @@ def _stats_to_wire(stats: RetrievalStats) -> RagRetrievalStats:
         embedding_ms=float(stats.embedding_ms),
         rerank_ms=float(stats.rerank_ms),
         generation_ms=float(stats.generation_ms),
+        total_ms=float(stats.total_ms),
         degraded=list(stats.degraded),
         retrieval_debug=stats.debug,
     )

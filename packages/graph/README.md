@@ -21,12 +21,14 @@ Sigma/布局**只在挂载 effect 内动态 import**：包模块本身无副作�
   keeps every backend edge distinct。`target === ""` 的 dangling（broken/
   ambiguous 无目标）边无法入图，被跳过并计入 `graphStats`——**绝不伪造
   目标节点**。
-- `graphStats` / `protocolNodes` — 统计与 id→协议节点索引。
+- `graphStats` / `protocolNodes` — 统计（含内容候选连线数）与 id→协议节点索引。
+- `connectedGraph(response)` — 仅供显示的稀疏图聚焦：保留至少有一条可绘制
+  连线的节点；原始响应及其分页统计不变，界面可切回全部笔记。
 - `SigmaGraph` — React 组件：创建/缩放/平移/拖拽、节点点击回调
   （`onNodeClick`）、theme、unmount 时 `kill()` + ResizeObserver 清理；
   构造失败或无 WebGL 显示 `GraphFallback` 与原因，不显示空白/假成功。
 - `GraphFallback` — 统计（Notes/Tags/Edges/Broken/Ambiguous）+ 可滚动
-  Note（打开）与 Tag（过滤）列表。
+  Note（打开）与 Tag（过滤）列表，并列出可绘制的内容相近关系及分数。
 - `styles.ts` — light/dark 色板与节点颜色、边颜色/样式及 legend 导出；当前
   Sigma renderer 统一使用 line 边类型，状态仍通过颜色与可访问文本区分。
 - `types.ts` — Graphology attribute 类型。
@@ -37,5 +39,6 @@ Sigma/布局**只在挂载 effect 内动态 import**：包模块本身无副作�
 `GraphFallback` 接收统计、节点及打开 Note/Tag 的回调。Tag 过滤由调用方
 负责；组件的 Tag 操作只打开首个匹配 tag 的行为。
 
-**大图策略**：>800 节点提高 label 阈值、>1000 关闭常驻 hover 标签并开启
+内容候选边用独立青色，与显式引用和标签边区分；只有有效目标的边进入图。
+**大图策略**：>80 节点减少常驻标签；>800 节点提高 label 阈值、>1000 关闭常驻 hover 标签并开启
 `hideEdgesOnMove`；前端不做自动无限加载（load-more 由调用方控制）。

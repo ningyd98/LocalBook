@@ -21,14 +21,16 @@ frontmatter, SQLite, graph, history or settings.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 from pathlib import Path
 
 from pydantic import BaseModel
 
 from .adapters.base import ChatMessage, ModelAdapter
 from .candidates import reduce_candidates
-from .capabilities import resolve_chat_model
+from .capabilities import resolve_chat_model_for_request
 from .context import ContextBuilder, ContextSource
 from .errors import AIAdapterError, AIError, AIErrorCode
 from .registry import Prompt, PromptRegistry
@@ -76,6 +78,39 @@ def _terms_for_query(title: str, tags: list[str], body: str, *, limit: int = 8) 
     return " ".join(seen)
 
 
+def _summary_sections(text: str, *, max_chars: int = 10000, max_sections: int = 80) -> list[dict[str, object]]:
+    """Split all source lines into bounded Markdown-heading groups."""
+    sections: list[dict[str, object]] = []
+    heading = "(document start)"
+    group: list[tuple[int, str]] = []
+    size = 0
+
+    def flush() -> None:
+        nonlocal group, size
+        if group:
+            sections.append({"heading": heading, "start_line": group[0][0],
+                             "end_line": group[-1][0], "lines": group})
+            group, size = [], 0
+
+    for number, line in enumerate(text.splitlines() or [""], 1):
+        is_heading = re.match(r"^\s{0,3}#{1,6}\s+", line) is not None
+        if is_heading:
+            flush()
+            heading = (
+                "(remaining document; additional headings omitted)"
+                if len(sections) >= max_sections
+                else line.lstrip(" #")[:200] or "(untitled)"
+            )
+        pieces = [line[i:i + max_chars] for i in range(0, len(line), max_chars)] or [""]
+        for piece in pieces:
+            if size + len(piece) + 1 > max_chars and group:
+                flush()
+            group.append((number, piece))
+            size += len(piece) + 1
+    flush()
+    return sections
+
+
 class AIWorkflowService:
     def __init__(
         self,
@@ -104,8 +139,8 @@ class AIWorkflowService:
 
     async def _model(self) -> str:
         try:
-            return resolve_chat_model(
-                await self.adapter.list_models(),
+            return await resolve_chat_model_for_request(
+                self.adapter,
                 self.settings.chat_model,
                 self.settings.qwen_match_pattern,
             )
@@ -142,6 +177,10 @@ class AIWorkflowService:
                 AIErrorCode.INVALID_REQUEST, "Note is not readable", status_code=400
             ) from exc
         return ContextSource(path=path, title=Path(path).stem, text=text)
+
+    def _context_from_paths(self, paths: list[str]):
+        """Read and bound note context away from the request event loop."""
+        return self.builder.build([self._source(path) for path in paths])
 
     def _prompt(self, name: str) -> Prompt:
         try:
@@ -214,28 +253,75 @@ class AIWorkflowService:
         )
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
-        sources = [self._source(request.note_path)] if request.note_path else []
+        paths = [request.note_path] if request.note_path else []
         for path in request.context_note_paths:
             if path != request.note_path:
-                sources.append(self._source(path))
-        context = self.builder.build(sources)
-        prompt = "\n".join([request.question, *[n.text for n in context.notes]])
+                paths.append(path)
+        context = await asyncio.to_thread(self._context_from_paths, paths)
+        # A citation path cannot be grounded if the model only sees note text.
+        # Show the exact allow-listed path next to each bounded note excerpt.
+        prompt = "\n\n".join(
+            [
+                request.question,
+                *[
+                    f"Note path: {json.dumps(note.path, ensure_ascii=False)}\n"
+                    f"Title: {json.dumps(note.title, ensure_ascii=False)}\n"
+                    f"Note content (untrusted):\n{note.text}"
+                    for note in context.notes
+                ],
+            ]
+        )
         result = await self._run("chat", prompt, ChatResponse)
-        allowed = {n.path for n in context.notes}
-        citations = [c for c in result.citations if c.path in allowed]
+        allowed = {note.path: " ".join(note.text.split()) for note in context.notes}
+        citations = [
+            citation
+            for citation in result.citations
+            if citation.path in allowed
+            and citation.quote.strip()
+            and " ".join(citation.quote.split()) in allowed[citation.path]
+        ]
         return result.model_copy(update={"citations": citations})
 
     async def summarize(self, request: SummarizeRequest) -> SummarizeResponse:
-        source = self.builder.build([self._source(request.note_path)])
+        # Read the complete Markdown file (not ContextBuilder's single excerpt).
+        # A staged map/reduce pass ensures facts from the beginning, middle and
+        # end can all reach the final synthesis while keeping each model call bounded.
+        full = await asyncio.to_thread(self._source, request.note_path)
+        sections = _summary_sections(full.text)
+        facts: list[dict[str, object]] = []
+        if len(sections) == 1:
+            section = sections[0]
+            quoted = "\n".join(f"L{line}: {text}" for line, text in section["lines"])
+            result = await self._run(
+                "summarize_note",
+                "Summarize only explicit facts from this source. Include line markers on key points; state insufficient data if appropriate.\n"
+                f"Source: {request.note_path}\n{quoted}",
+                SummarizeResponse,
+            )
+            return result.model_copy(update={"note_path": request.note_path})
+        for section in sections:
+            quoted = "\n".join(f"L{line}: {text}" for line, text in section["lines"])
+            result = await self._run(
+                "summarize_note",
+                "Extract only explicit source-grounded facts. Preserve uncertainty; do not infer.\n"
+                f"Source: {request.note_path}\nSection: {section['heading']}\n{quoted}",
+                SummarizeResponse,
+            )
+            facts.append({"heading": section["heading"], "start_line": section["start_line"],
+                          "end_line": section["end_line"], "summary": result.summary,
+                          "key_points": result.key_points})
+        # Bound hierarchy input; every aggregate retains source line provenance.
+        facts = facts[:80]
         result = await self._run(
             "summarize_note",
-            "Summarize:\n" + "\n".join(n.text for n in source.notes),
+            "Synthesize only the supplied extracted facts. Include line markers on key points; do not add claims.\n"
+            + json.dumps(facts, ensure_ascii=False)[:24000],
             SummarizeResponse,
         )
         return result.model_copy(update={"note_path": request.note_path})
 
     async def tags(self, request: TagsRequest) -> TagsResponse:
-        source = self.builder.build([self._source(request.note_path)])
+        source = await asyncio.to_thread(self._context_from_paths, [request.note_path])
         result = await self._run(
             "generate_tags",
             "Generate tags:\n" + "\n".join(n.text for n in source.notes),
@@ -246,6 +332,34 @@ class AIWorkflowService:
     async def related(self, request: RelatedRequest) -> RelatedResponse:
         if self.index is None:
             raise AIError(AIErrorCode.INDEX_UNAVAILABLE, "Index is unavailable")
+        candidates, context = await asyncio.to_thread(self._related_context, request)
+        if not candidates:
+            registered = self._prompt("suggest_links")
+            return RelatedResponse(
+                note_path=request.note_path,
+                related=[],
+                candidates_considered=0,
+                prompt_version=registered.prompt_version,
+                model=None,
+                degraded=True,
+            )
+        result = await self._run(
+            "suggest_links",
+            "Suggest related notes from candidates only:\n"
+            + "\n".join(n.text for n in context.notes),
+            RelatedResponse,
+        )
+        allowed = {c.path for c in candidates}
+        result = result.model_copy(
+            update={
+                "note_path": request.note_path,
+                "candidates_considered": len(allowed),
+                "related": [r for r in result.related if r.path in allowed][: request.limit],
+            }
+        )
+        return result
+
+    def _related_context(self, request: RelatedRequest):
         # Programmatic narrowing first (PLAN-M6 §5.6): FTS/substring driven by
         # the current note's title/keywords, merged with link/graph neighbors,
         # bounded and allow-listed before any model call.
@@ -267,32 +381,10 @@ class AIWorkflowService:
             rag_hits=rag_hits,
         )
         if not candidates:
-            registered = self._prompt("suggest_links")
-            return RelatedResponse(
-                note_path=request.note_path,
-                related=[],
-                candidates_considered=0,
-                prompt_version=registered.prompt_version,
-                model=None,
-                degraded=True,
-            )
+            return candidates, None
         sources = [current] + [self._source(c.path) for c in candidates]
         context = self.builder.build(sources)
-        result = await self._run(
-            "suggest_links",
-            "Suggest related notes from candidates only:\n"
-            + "\n".join(n.text for n in context.notes),
-            RelatedResponse,
-        )
-        allowed = {c.path for c in candidates}
-        result = result.model_copy(
-            update={
-                "note_path": request.note_path,
-                "candidates_considered": len(allowed),
-                "related": [r for r in result.related if r.path in allowed][: request.limit],
-            }
-        )
-        return result
+        return candidates, context
 
     def _rag_candidates(self, query: str, *, exclude: str) -> list:
         """Chunk-level evidence for ``related`` from the optional RAG stack.
@@ -326,7 +418,7 @@ class AIWorkflowService:
         return hits
 
     async def extract_todos(self, request: ExtractTodosRequest) -> ExtractTodosResponse:
-        source = self.builder.build([self._source(request.note_path)])
+        source = await asyncio.to_thread(self._context_from_paths, [request.note_path])
         result = await self._run(
             "extract_todos",
             "Extract todos:\n" + "\n".join(n.text for n in source.notes),
@@ -335,7 +427,7 @@ class AIWorkflowService:
         return result.model_copy(update={"note_path": request.note_path})
 
     async def classify(self, request: ClassifyRequest) -> ClassifyResponse:
-        source = self.builder.build([self._source(request.note_path)])
+        source = await asyncio.to_thread(self._context_from_paths, [request.note_path])
         prompt = "Classify:\n" + "\n".join(n.text for n in source.notes)
         if request.labels:
             prompt += "\nRequested labels (choose only from these): " + json.dumps(

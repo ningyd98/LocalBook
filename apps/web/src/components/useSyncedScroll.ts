@@ -51,6 +51,7 @@ export function useSyncedScroll(left: React.RefObject<HTMLElement>, right: React
     let leftScroller: HTMLElement | null = null;
     let rightScroller: HTMLElement | null = null;
     let detach: Array<() => void> = [];
+    const mutationObservers: MutationObserver[] = [];
     // Element whose next scroll event is our own write, not the user's.
     let echoFrom: HTMLElement | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -73,11 +74,14 @@ export function useSyncedScroll(left: React.RefObject<HTMLElement>, right: React
         // Already there (both sides moved, or a rounding step): no write, so no
         // echo to suppress either.
         if (Math.abs(other.scrollTop - next) < 0.5) return;
-        // Read the old value first: assigning scrollTop can dispatch the event
-        // synchronously, and the guard must swallow the *new* value.
+        // Mark the peer before assigning: jsdom and some browsers dispatch the
+        // resulting scroll event synchronously. If it is asynchronous, the mark
+        // remains until that event arrives; if it is synchronous, the handler
+        // consumes it and leaves echoFrom clear.
         const previous = other.scrollTop;
+        echoFrom = other;
         other.scrollTop = next;
-        echoFrom = other.scrollTop === previous ? null : other;
+        if (echoFrom === other && other.scrollTop === previous) echoFrom = null;
       };
       target.addEventListener("scroll", onScroll, { passive: true });
       return () => target.removeEventListener("scroll", onScroll);
@@ -119,11 +123,23 @@ export function useSyncedScroll(left: React.RefObject<HTMLElement>, right: React
       timer = setTimeout(poll, ATTACH_RETRY_MS);
     };
 
+    const observePane = (pane: HTMLElement | null) => {
+      if (!pane || typeof MutationObserver === "undefined") return;
+      const observer = new MutationObserver(() => {
+        if (!stopped) bind();
+      });
+      observer.observe(pane, { childList: true, subtree: true });
+      mutationObservers.push(observer);
+    };
+
+    observePane(left.current);
+    observePane(right.current);
     poll();
 
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
+      mutationObservers.forEach((observer) => observer.disconnect());
       unbind();
     };
     // `resetKey` is the open note plus the layout: switching a tab replaces the

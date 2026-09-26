@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 from server.api.main import create_app
-from server.config import Settings
-from server.runtime import SESSION_HEADER
+from server.config import RagSettings, Settings
+from server.runtime import SESSION_HEADER, ConfigRepository
 from tests.backend.client import TestClient
+
+# A reranker endpoint may be a local server that still enforces auth (vLLM,
+# omlx, Cohere-style); the key has to be settable like the embedding one.
+RERANK_TOKEN = "rerank-secret-token"
 
 WEB_SETTINGS_TS = (
     Path(__file__).resolve().parents[2] / "apps" / "web" / "src" / "api" / "settings.ts"
@@ -355,8 +360,8 @@ def test_web_and_server_rag_settings_contract() -> None:
         f"not accepted by the server: {sorted(web_patch - server_patch)}"
     )
     # (a) every accepted key is representable in the web type. The write-only
-    # secret lives on RagConfigurationPatch instead of the snapshot type.
-    assert server_patch - web_keys <= {"embedding_api_key"}
+    # secrets live on RagConfigurationPatch instead of the snapshot type.
+    assert server_patch - web_keys <= {"embedding_api_key", "reranker_api_key"}
     # (b) the web type invents nothing the server never sends.
     assert web_keys <= server_snapshot, sorted(web_keys - server_snapshot)
     # (d) status-only keys stay out of both the type and the wire.
@@ -365,3 +370,137 @@ def test_web_and_server_rag_settings_contract() -> None:
     # (e) env-only knobs stay a documented boundary until they get real inputs.
     for env_only in ("embedding_batch_size", "embedding_timeout_seconds", "use_env_proxy"):
         assert env_only not in web_keys
+
+
+# --------------------------------------------------------------------------
+# The reranker secret: settable, reusable, clearable
+# --------------------------------------------------------------------------
+
+
+def test_reranker_api_key_is_saved_but_never_echoed(tmp_path: Path) -> None:
+    """Regression: the field was missing from the PATCH model, so the whole save
+    422'd and a rerank endpoint enforcing auth could never be configured."""
+    app, _ = _workspace(tmp_path)
+    with TestClient(app) as client:
+        client.headers[SESSION_HEADER] = app.state.runtime.session_id
+        before = client.get("/api/v1/settings").json()
+        assert before["rag"]["reranker_api_key_set"] is False
+        accepted = client.patch(
+            "/api/v1/settings/rag",
+            json={
+                "expected_revision": before["revision"],
+                "rag": {
+                    "reranker_enabled": True,
+                    "reranker_provider": "openai_compatible",
+                    "reranker_base_url": "http://127.0.0.1:8234/v1",
+                    "reranker_model": "Qwen3-Reranker-0.6B-Q8",
+                    "reranker_api_key": RERANK_TOKEN,
+                },
+            },
+        )
+        assert accepted.status_code == 200, accepted.text
+        rag = accepted.json()["rag"]
+        assert rag["reranker_api_key_set"] is True
+        assert "reranker_api_key" not in rag
+        # The secret reaches the runtime settings — that is where the factory and
+        # the probe read it from; only the response hides it.
+        assert app.state.runtime.settings.rag.reranker_api_key == RERANK_TOKEN
+
+
+def test_reranker_api_key_survives_a_partial_edit_and_can_be_cleared(tmp_path: Path) -> None:
+    app, _ = _workspace(tmp_path)
+    with TestClient(app) as client:
+        client.headers[SESSION_HEADER] = app.state.runtime.session_id
+        revision = client.get("/api/v1/settings").json()["revision"]
+        saved = client.patch(
+            "/api/v1/settings/rag",
+            json={"expected_revision": revision, "rag": {"reranker_api_key": RERANK_TOKEN}},
+        )
+        assert saved.status_code == 200, saved.text
+        # Omitting the secret on a later edit must keep it, not blank it.
+        kept = client.patch(
+            "/api/v1/settings/rag",
+            json={"expected_revision": saved.json()["revision"], "rag": {"context_top_k": 5}},
+        )
+        assert kept.status_code == 200, kept.text
+        assert kept.json()["rag"]["reranker_api_key_set"] is True
+        assert kept.json()["rag"]["context_top_k"] == 5
+        # "" is the explicit way to clear a stored secret.
+        cleared = client.patch(
+            "/api/v1/settings/rag",
+            json={"expected_revision": kept.json()["revision"], "rag": {"reranker_api_key": ""}},
+        )
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["rag"]["reranker_api_key_set"] is False
+
+
+# --------------------------------------------------------------------------
+# ConfigRepository: RAG now survives a restart
+# --------------------------------------------------------------------------
+
+
+def test_rag_settings_round_trip_through_the_settings_file(tmp_path: Path) -> None:
+    """Regression: ``rag`` was never written, so every restart silently reset the
+    reranker (endpoint, model and key) back to the defaults."""
+    path = tmp_path / "settings.json"
+    settings = Settings(
+        rag=RagSettings(
+            enabled=True,
+            reranker_enabled=True,
+            reranker_provider="openai_compatible",
+            reranker_base_url="http://127.0.0.1:8234/v1",
+            reranker_model="Qwen3-Reranker-0.6B-Q8",
+            reranker_api_key=RERANK_TOKEN,
+            link_retrieval_enabled=True,
+        )
+    )
+    ConfigRepository(path).save(settings, 9)
+
+    reloaded, revision = ConfigRepository(path).load(Settings())
+    assert revision == 9
+    assert reloaded.rag.reranker_enabled is True
+    assert reloaded.rag.reranker_base_url == "http://127.0.0.1:8234/v1"
+    assert reloaded.rag.reranker_model == "Qwen3-Reranker-0.6B-Q8"
+    assert reloaded.rag.reranker_api_key == RERANK_TOKEN
+    assert reloaded.rag.link_retrieval_enabled is True
+
+
+def test_untouched_rag_keeps_the_legacy_file_shape(tmp_path: Path) -> None:
+    """An installation that never configured RAG keeps the old file shape."""
+    path = tmp_path / "settings.json"
+    ConfigRepository(path).save(Settings(ai={"base_url": "http://127.0.0.1:8234/v1"}), 2)
+    assert "rag" not in json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_legacy_file_without_rag_still_loads(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({
+            "revision": 4,
+            "vault_root": None,
+            "ai": {"enabled": True, "base_url": None, "chat_model": "auto"},
+        }),
+        encoding="utf-8",
+    )
+    settings, revision = ConfigRepository(path).load(Settings())
+    assert revision == 4
+    assert settings.rag.reranker_enabled is False
+    assert settings.rag.context_top_k == 6
+
+
+def test_unreadable_rag_section_degrades_instead_of_blocking_startup(tmp_path: Path) -> None:
+    """RAG is derived and optional: it may never be able to stop the app."""
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({
+            "revision": 5,
+            "vault_root": None,
+            "ai": {"enabled": True, "base_url": None, "chat_model": "auto"},
+            "rag": {"chunk_target_tokens": 5000, "chunk_max_tokens": 10},
+        }),
+        encoding="utf-8",
+    )
+    settings, revision = ConfigRepository(path).load(Settings())
+    assert revision == 5
+    assert settings.rag.chunk_target_tokens == 800
+    assert settings.rag.chunk_max_tokens == 1200

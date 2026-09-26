@@ -168,10 +168,10 @@ export function SigmaGraph({
         renderer = new SigmaCtor(graph, container, {
           backgroundColor: THEMES[palette].background,
           labelColor: {color: THEMES[palette].label},
-          labelRenderedSizeThreshold: nodesTotal > 800 ? 18 : 0,
+          labelRenderedSizeThreshold: nodesTotal > 80 ? 8 : 0,
           labelSize: 12,
           labelFont: "system-ui, sans-serif",
-          labelDensity: 1,
+          labelDensity: nodesTotal > 80 ? 0.5 : 1,
           labelGridCellSize: 90,
           stagePadding: 55,
           labelsOnHover: nodesTotal <= 1000,
@@ -190,7 +190,7 @@ export function SigmaGraph({
             return {
               ...data,
               color: edgeColor(attrs, palette),
-              size: 0.6,
+              size: attrs.kind === "semantic" ? 1.8 : 2.2,
               type: "line",
             };
           },

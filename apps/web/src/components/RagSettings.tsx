@@ -42,6 +42,8 @@ export function RagSettingsSection({
   const [draft, setDraft] = useState<RagConfiguration>(rag);
   const [apiKey, setApiKey] = useState("");
   const [keyTouched, setKeyTouched] = useState(false);
+  const [rerankKey, setRerankKey] = useState("");
+  const [rerankKeyTouched, setRerankKeyTouched] = useState(false);
   const [status, setStatus] = useState<RagIndexStatusResponse | null>(null);
   const [rerankerProbe, setRerankerProbe] = useState<RerankerProbeResult | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -88,12 +90,19 @@ export function RagSettingsSection({
         // such as ``link_retrieval`` can never reach the wire through this helper.
         const payload = ragPatchPayload(
           draft,
-          keyTouched ? { embedding_api_key: apiKey } : {},
+          {
+            // Both secrets are write-only: they are sent only after the user
+            // typed something, so an untouched save never clears a stored key.
+            ...(keyTouched ? { embedding_api_key: apiKey } : {}),
+            ...(rerankKeyTouched ? { reranker_api_key: rerankKey } : {}),
+          },
         );
         const result = await updateRagSettings(payload, current?.revision ?? 0);
         if (result.rag) setDraft(result.rag);
         setKeyTouched(false);
         setApiKey("");
+        setRerankKeyTouched(false);
+        setRerankKey("");
         onSaved(result);
         refreshStatus();
         say(
@@ -208,6 +217,23 @@ export function RagSettingsSection({
           }
           onChange={event => { setApiKey(event.target.value); setKeyTouched(true); }}
         />
+      </label>
+
+      <label className="field">
+        <span>{tr("Embedding 维度", "Embedding dimension")}</span>
+        <input
+          type="number"
+          min={0}
+          value={Number(draft.embedding_dimension ?? 0)}
+          disabled={disabled || draft.embedding_provider === "hash"}
+          onChange={event => set("embedding_dimension", Number(event.target.value))}
+        />
+        <small>
+          {tr(
+            "0 = 自动探测模型返回的维度（推荐）。填错会报维度不匹配，索引里的向量会全部作废。",
+            "0 auto-detects the dimension the model returns (recommended). A wrong value fails with a dimension mismatch and invalidates every stored vector.",
+          )}
+        </small>
       </label>
 
       <h4>{tr("检索与分块", "Retrieval & chunking")}</h4>
@@ -343,6 +369,27 @@ export function RagSettingsSection({
                   onChange={event => set("reranker_model", event.target.value)}
                 />
               </label>
+              <label className="field">
+                <span>{tr("重排 API Key（可选）", "Reranker API key (optional)")}</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={rerankKey}
+                  disabled={disabled}
+                  placeholder={
+                    current?.rag?.reranker_api_key_set
+                      ? tr("已保存，留空则保持不变", "Saved — leave blank to keep it")
+                      : tr("本地端点需要鉴权时填写", "Fill in when the endpoint enforces auth")
+                  }
+                  onChange={event => { setRerankKey(event.target.value); setRerankKeyTouched(true); }}
+                />
+                <small>
+                  {tr(
+                    "与 Embedding 密钥相互独立；只保存在本机配置里，不会回显。",
+                    "Independent of the embedding key; stored locally and never echoed back.",
+                  )}
+                </small>
+              </label>
               <div className="setting-row">
                 <div>
                   <label>{tr("测试重排端点", "Test rerank endpoint")}</label>
@@ -362,6 +409,9 @@ export function RagSettingsSection({
                         await testReranker({
                           base_url: draft.reranker_base_url,
                           model: draft.reranker_model,
+                          // Omitted while untouched so the server reuses the
+                          // stored key (a saved secret is never readable here).
+                          api_key: rerankKeyTouched && rerankKey ? rerankKey : undefined,
                         }),
                       );
                     })

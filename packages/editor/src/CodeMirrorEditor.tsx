@@ -7,12 +7,27 @@ import { EditorView, keymap } from "@codemirror/view";
 import type { ForwardedRef, ReactNode } from "react";
 import { livePreview } from "./livePreviewExt";
 import type { LivePreviewOptions } from "./livePreviewExt";
+import { applyTextColor, clearFormatting, insertTable, toggleBold, toggleHighlight, toggleItalic } from "./formatting";
 
 export interface CodeMirrorEditorHandle {
   /** Insert text at the current selection and place the caret after it. */
   insertAtSelection: (text: string) => boolean;
   /** Toggle a heading level (0 = paragraph) on the selected lines. */
   setHeading: (level: number) => boolean;
+  /** Place the caret on a 0-based line and pin it to the top of the viewport. */
+  revealLine: (line: number) => boolean;
+  /** Toggle `**bold**` on the selection. */
+  toggleBold: () => boolean;
+  /** Toggle `*italic*` on the selection. */
+  toggleItalic: () => boolean;
+  /** Toggle `==highlight==` on the selection. */
+  toggleHighlight: () => boolean;
+  /** Apply (or clear, when re-applied) a `#rrggbb` text colour. */
+  applyTextColor: (color: string) => boolean;
+  /** Remove bold/italic/highlight/colour formatting from the selection. */
+  clearFormatting: () => boolean;
+  /** Insert a GFM table with `rows` rows (header included) and `columns` columns. */
+  insertTable: (rows: number, columns: number) => boolean;
   focus: () => void;
 }
 
@@ -61,6 +76,22 @@ const headingKeymap = keymap.of(
   ]),
 );
 
+/**
+ * Inline-format shortcuts, bound with both `Mod-` (Cmd on macOS) and `Ctrl-`.
+ *
+ * `Ctrl-B`/`Ctrl-I` are the bindings every Markdown editor ships; the browser
+ * does not reserve them inside a text field. Highlight uses Shift-H because
+ * `Cmd-E`/`Ctrl-E` is the browser/OS "use selection for find" on macOS.
+ */
+const formatKeymap = keymap.of([
+  { key: "Mod-b", run: toggleBold },
+  { key: "Ctrl-b", run: toggleBold },
+  { key: "Mod-i", run: toggleItalic },
+  { key: "Ctrl-i", run: toggleItalic },
+  { key: "Mod-Shift-h", run: toggleHighlight },
+  { key: "Ctrl-Shift-h", run: toggleHighlight },
+]);
+
 export interface CodeMirrorEditorProps {
   value: string;
   onChange: (value: string) => void;
@@ -81,6 +112,8 @@ export interface CodeMirrorEditorProps {
   handleRef?: ForwardedRef<CodeMirrorEditorHandle>;
   /** Registers a caret-insert handler for this note while the editor is mounted. */
   onRegisterCaretInsert?: (handler: ((markdown: string) => boolean) | null) => void;
+  /** Fires with the 0-based caret line so the outline can highlight it. */
+  onCursorLine?: (line: number) => void;
   /** Single-column WYSIWYG rendering (Obsidian-style live preview). */
   livePreview?: LivePreviewOptions | null;
 }
@@ -133,6 +166,7 @@ export function CodeMirrorEditor({
   toolbar,
   handleRef,
   onRegisterCaretInsert,
+  onCursorLine,
   livePreview: livePreviewOptions,
 }: CodeMirrorEditorProps) {
   const host = useRef<HTMLDivElement>(null);
@@ -151,6 +185,7 @@ export function CodeMirrorEditor({
   const onDragOverRef = useRef(onDragOver);
   const onDragLeaveRef = useRef(onDragLeave);
   const onContextMenuRef = useRef(onContextMenuAt);
+  const onCursorLineRef = useRef(onCursorLine);
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
   onDropRef.current = onDropFiles;
@@ -158,36 +193,68 @@ export function CodeMirrorEditor({
   onDragOverRef.current = onDragOver;
   onDragLeaveRef.current = onDragLeave;
   onContextMenuRef.current = onContextMenuAt;
+  onCursorLineRef.current = onCursorLine;
 
   useImperativeHandle(
     handleRef,
-    () => ({
-      insertAtSelection: (text: string) => {
-        const current = view.current;
-        if (!current || !text) return false;
-        const { from, to } = current.state.selection.main;
-        const line = current.state.doc.lineAt(to);
-        // Insert as its own paragraph: a reference must never merge into the
-        // line the caret happens to sit on. The caret stays after the snippet.
-        const lead = line.from === 0 && line.length === 0 ? "" : to === line.from ? "" : "\n";
-        const snippet = `${lead}${text}${text.endsWith("\n") ? "" : "\n"}`;
-        current.dispatch({
-          changes: { from, to, insert: snippet },
-          selection: { anchor: from + snippet.length },
-          scrollIntoView: true,
-        });
-        current.focus();
-        return true;
-      },
-      setHeading: (level: number) => {
+    () => {
+      /** Run a formatting command against the live view, then keep focus. */
+      const run = (command: (current: EditorView) => boolean) => {
         const current = view.current;
         if (!current) return false;
-        const changed = setHeadingLevel(level)(current);
+        const changed = command(current);
         current.focus();
         return changed;
-      },
-      focus: () => view.current?.focus(),
-    }),
+      };
+      return {
+        insertAtSelection: (text: string) => {
+          const current = view.current;
+          if (!current || !text) return false;
+          const { from, to } = current.state.selection.main;
+          const line = current.state.doc.lineAt(to);
+          // Insert as its own paragraph: a reference must never merge into the
+          // line the caret happens to sit on. The caret stays after the snippet.
+          const lead = line.from === 0 && line.length === 0 ? "" : to === line.from ? "" : "\n";
+          const snippet = `${lead}${text}${text.endsWith("\n") ? "" : "\n"}`;
+          current.dispatch({
+            changes: { from, to, insert: snippet },
+            selection: { anchor: from + snippet.length },
+            scrollIntoView: true,
+          });
+          current.focus();
+          return true;
+        },
+        setHeading: (level: number) => {
+          const current = view.current;
+          if (!current) return false;
+          const changed = setHeadingLevel(level)(current);
+          current.focus();
+          return changed;
+        },
+        revealLine: (line: number) => {
+          const current = view.current;
+          if (!current) return false;
+          const total = current.state.doc.lines;
+          const number = Math.max(1, Math.min(Math.trunc(line) + 1, total));
+          const info = current.state.doc.line(number);
+          // `scrollIntoView` as an *effect* pins the line to the top of the
+          // viewport; the selection is placed there so typing continues in place.
+          current.dispatch({
+            selection: { anchor: info.from },
+            effects: EditorView.scrollIntoView(info.from, { y: "start" }),
+          });
+          current.focus();
+          return true;
+        },
+        focus: () => view.current?.focus(),
+        toggleBold: () => run(toggleBold),
+        toggleItalic: () => run(toggleItalic),
+        toggleHighlight: () => run(toggleHighlight),
+        applyTextColor: (color: string) => run(current => applyTextColor(current, color)),
+        clearFormatting: () => run(clearFormatting),
+        insertTable: (rows: number, columns: number) => run(current => insertTable(current, rows, columns)),
+      };
+    },
     [],
   );
 
@@ -226,6 +293,7 @@ export function CodeMirrorEditor({
         history(),
         keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
         headingKeymap,
+        formatKeymap,
         liveComp.current.of(livePreviewOptions ? livePreview(() => liveOptions.current ?? {}) : []),
         EditorView.lineWrapping,
         themeComp.current.of(theme === "dark" ? oneDark : lightTheme),
@@ -245,6 +313,11 @@ export function CodeMirrorEditor({
         }),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current(update.state.doc.toString());
+          // Selection-only updates matter too: the outline follows the caret.
+          if (update.docChanged || update.selectionSet) {
+            const head = update.state.selection.main.head;
+            onCursorLineRef.current?.(update.state.doc.lineAt(head).number - 1);
+          }
         }),
       ],
     });

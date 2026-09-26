@@ -1,0 +1,70 @@
+.DS_Store
+.build/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+.swiftpm/
+*.swiftmodule
+*.swiftdoc
+*.swiftinterface
+*.pbxproj.bak
+*.xccheckout
+*.moved-aside
+*.playground
+*.xcuserstate
+Packages/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+timeline.xctimeline
+playground.xcworkspace
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Thumbnails
+Thumbs.db
+
+# Files that might appear in the root of a volume
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Local configuration
+*.local.json
+.env
+.env.local
+
+# Generated build and release artifacts
+.build*/
+dist/
+dist-dmg/
+dist-preserved/
+packaging/build/
+verification/
+.swift-home/

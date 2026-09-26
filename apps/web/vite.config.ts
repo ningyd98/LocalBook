@@ -39,6 +39,19 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    // Keep React's stable runtime out of the changing application entry so
+    // browsers can cache it independently and the main chunk stays smaller.
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("/node_modules/react/") || id.includes("/node_modules/react-dom/")) {
+            return "react-vendor";
+          }
+        },
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     include: ["../../tests/frontend/**/*.test.{ts,tsx}"],

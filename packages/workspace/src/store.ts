@@ -44,6 +44,12 @@ export function isImageAttachment(name: string, contentType?: string | null): bo
   return /\.(png|jpe?g|gif|webp|avif|bmp|svg|ico)$/i.test(name);
 }
 
+/** True when an uploaded attachment can be embedded as an audio player. */
+export function isAudioAttachment(name: string, contentType?: string | null): boolean {
+  if (contentType && contentType.toLowerCase().startsWith("audio/")) return true;
+  return /\.(mp3|wav|m4a|aac|flac|ogg|oga|opus|webm|amr|caf|aiff?|wma)$/i.test(name.split("?", 1)[0] ?? name);
+}
+
 const encoder = new TextEncoder();
 const toBase64 = (value: string, lineSeparator: "CRLF" | "LF" | "CR" = "LF", hasBOM: boolean = false) => {
   // Restore original line separators
@@ -330,7 +336,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     trash: { status: "idle", entries: [], retentionDays: 30, totalBytes: 0, error: null, busy: false },
     relations: { status: "idle", path: null, outgoing: null, backlinks: null, brokenCount: 0, error: null },
     search: { status: "idle", query: "", response: null, error: null },
-    graph: { status: "idle", scope: "global", note: null, depth: 1, direction: "both", tag: null, includeBroken: true, limit: 500, offset: 0, response: null, error: null, requestVersion: 0 }, ai: { status: "idle", action: null, notePath: null, response: null, error: null, requestVersion: 0 },
+    graph: { status: "idle", scope: "global", note: null, depth: 1, direction: "both", tag: null, includeBroken: true, includeSemantic: true, limit: 500, offset: 0, response: null, error: null, requestVersion: 0 }, ai: { status: "idle", action: null, notePath: null, response: null, error: null, requestVersion: 0 },
     ...readPreferences(), workspaceFrozen: false, vaultStale: false,
     setPreferences: (value) => { const next = validatePreferences({ ...get(), ...value }); persistPreferences(next); set(next); },
     saveAll: async () => {
@@ -800,9 +806,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
       const current = get().graph;
       // A semantic change (scope/pivot/filters/page size) restarts pagination
       // at offset 0 unless the caller explicitly requested an offset (load-more).
-      const changed = (key: "scope" | "note" | "tag" | "direction" | "depth" | "includeBroken" | "limit") =>
+      const changed = (key: "scope" | "note" | "tag" | "direction" | "depth" | "includeBroken" | "includeSemantic" | "limit") =>
         overrides?.[key] !== undefined && overrides[key] !== current[key];
-      const semanticKeys = ["scope", "note", "tag", "direction", "depth", "includeBroken", "limit"] as const;
+      const semanticKeys = ["scope", "note", "tag", "direction", "depth", "includeBroken", "includeSemantic", "limit"] as const;
       const anySemanticChange = semanticKeys.some(changed);
       const controls = {
         scope: overrides?.scope ?? current.scope,
@@ -811,6 +817,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         direction: overrides?.direction ?? current.direction,
         tag: overrides?.tag !== undefined ? overrides.tag : current.tag,
         includeBroken: overrides?.includeBroken ?? current.includeBroken,
+        includeSemantic: overrides?.includeSemantic ?? current.includeSemantic ?? true,
         limit: overrides?.limit ?? current.limit,
         offset: overrides?.offset ?? (anySemanticChange ? 0 : current.offset),
       };
@@ -824,7 +831,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         return;
       }
       set((s) => ({ graph: { ...s.graph, ...controls, status: "loading", response: null, error: null, requestVersion: version } }));
-      const query = { limit: controls.limit, offset: controls.offset, include_broken: controls.includeBroken };
+      const query = { limit: controls.limit, offset: controls.offset, include_broken: controls.includeBroken, ...(controls.includeSemantic ? {} : { include_semantic: false }) };
       try {
         let response;
         if (controls.scope === "local") {
@@ -845,7 +852,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         set((s) => ({ graph: { ...s.graph, status: e.code === "index_unavailable" || e.status === 503 ? "unavailable" : "error", response: null, error: e, requestVersion: version } }));
       }
     },
-    clearGraph: () => set({ graph: { status: "idle", scope: "global", note: null, depth: 1, direction: "both", tag: null, includeBroken: true, limit: 500, offset: 0, response: null, error: null, requestVersion: 0 } }),
+    clearGraph: () => set({ graph: { status: "idle", scope: "global", note: null, depth: 1, direction: "both", tag: null, includeBroken: true, includeSemantic: true, limit: 500, offset: 0, response: null, error: null, requestVersion: 0 } }),
     runAI: async (action, args) => {
       const version = ++aiVersion;
       const path = typeof args.note_path === "string" ? args.note_path : get().activePath;
@@ -906,7 +913,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
         if (!result || typeof result.path !== "string") throw new Error("Invalid attachment response");
         const reference = relativeMarkdownReference(notePath, result.path);
         const label = (result.original_name || originalName).replace(/[\[\]]/g, "");
-        const markdown = isImageAttachment(result.path, result.content_type)
+        const markdown = isImageAttachment(result.path, result.content_type) || isAudioAttachment(result.path, result.content_type)
           ? `![${label}](${encodeReference(reference)})`
           : `[${label}](${encodeReference(reference)})`;
         const inserted = get().insertMarkdownAtSelection(notePath, markdown);

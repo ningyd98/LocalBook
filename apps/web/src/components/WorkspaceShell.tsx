@@ -2,12 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { Button, Icon, IconButton } from "@localnote/ui";
 import { createDebouncedSave, fontScaleVars, fontStacks, isEditableMarkdown, useWorkspaceStore } from "@localnote/workspace";
-import { vaultResourceUrl } from "../api/client";
+import { downloadExportMarkdown, exportNote, transcribeAudio, vaultDocumentPreviewUrl, vaultResourceUrl } from "../api/client";
 import { noteAncestorPaths, resolveVaultRelativePath } from "@localnote/protocol";
+import type { HeadingEntry } from "@localnote/protocol";
 import { AttachmentPreview } from "./AttachmentPreview";
 import { ContextMenu } from "./ContextMenu";
 import type { ContextMenuItem } from "./ContextMenu";
+import { FormatMenu } from "./FormatMenu";
+import type { EditorFormatCommands } from "./FormatToolbar";
 import { Sidebar } from "./Sidebar";
+import { OutlinePanel } from "./OutlinePanel";
 import { TabBar } from "./TabBar";
 import { EditorPane } from "./EditorPane";
 import { PreviewPane } from "./PreviewPane";
@@ -19,8 +23,19 @@ import { TrashPanel } from "./TrashPanel";
 import { useSyncedScroll } from "./useSyncedScroll";
 import { PaneResize } from "./PaneResize";
 import { useI18n } from "../i18n";
+import { buildPrintDocument, exportFilename, printHtmlDocument, renderExportBody, saveBlob } from "../export/noteExport";
 
-export function WorkspaceShell({ leftView, centerView, inspector, onToggleInspector, onShowNotes, onOpenSettings, onOpenSearch, onOpenGraph, vaultName = "LocalNote", apiReady = true, sidebarRequest = 0 }: {leftView?: ReactNode; centerView?: ReactNode; inspector?: ReactNode; onToggleInspector?: () => void; onShowNotes?: () => void; onOpenSettings?: () => void; onOpenSearch?: () => void; onOpenGraph?: () => void; vaultName?: string; apiReady?: boolean; sidebarRequest?: number}) {
+function resolveAttachmentUrl(notePath: string, target: string, resolver: (path: string) => string): string | null {
+  const hash = target.indexOf("#");
+  const query = target.indexOf("?");
+  const cut = [hash, query].filter(index => index >= 0).sort((a, b) => a - b)[0] ?? target.length;
+  const fragment = hash >= 0 && (query < 0 || hash < query) ? target.slice(hash) : "";
+  const safeFragment = /^#page=\d+$/i.test(fragment) ? fragment : "";
+  const resolved = resolveVaultRelativePath(notePath, target.slice(0, cut));
+  return resolved ? `${resolver(resolved)}${safeFragment}` : null;
+}
+
+export function WorkspaceShell({ leftView, centerView, inspector, onToggleInspector, onShowNotes, onOpenSettings, onOpenSearch, onOpenGraph, vaultName = "LocalNote", apiReady = true, sidebarRequest = 0, outlineOpen = false }: {leftView?: ReactNode; centerView?: ReactNode; inspector?: ReactNode; onToggleInspector?: () => void; onShowNotes?: () => void; onOpenSettings?: () => void; onOpenSearch?: () => void; onOpenGraph?: () => void; vaultName?: string; apiReady?: boolean; sidebarRequest?: number; outlineOpen?: boolean}) {
   const { t, tr, errorText } = useI18n();
   const s = useWorkspaceStore(); const session = s.activePath ? s.sessions[s.activePath] : undefined;
   const [closing, setClosing] = useState<string | null>(null);
@@ -29,8 +44,20 @@ export function WorkspaceShell({ leftView, centerView, inspector, onToggleInspec
   const [attachmentPath, setAttachmentPath] = useState<string | null>(null);
   const [wikilinkError, setWikilinkError] = useState<string | null>(null);
   const [treeError, setTreeError] = useState<string | null>(null);
-  const [menu, setMenu] = useState<{ path: string | null; x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{ path: string | null; x: number; y: number; source: "document" | "editor" } | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [exportBusy, setExportBusy] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  /** Collapsed outline nodes, per note path (see OutlinePanel). */
+  const [outlineCollapsed, setOutlineCollapsed] = useState<Record<string, string[]>>({});
+  /**
+   * Outline state: one reveal handler per open note (every editor stays
+   * mounted) and the caret line per note, so the marker survives tab switches.
+   */
+  const revealHandlers = useRef(new Map<string, (line: number) => boolean>());
+  /** Inline-formatting commands of every open note, keyed by path. */
+  const formatCommands = useRef(new Map<string, EditorFormatCommands>());
+  const [cursorLines, setCursorLines] = useState<Record<string, number>>({});
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [mobile, setMobile] = useState(() => typeof matchMedia === "function" && matchMedia("(max-width: 759px)").matches);
@@ -105,7 +132,20 @@ export function WorkspaceShell({ leftView, centerView, inspector, onToggleInspec
       await s.uploadAndInsertAttachment(file, { notePath, targetDirectory, source });
     }
   };
-  /** Obsidian rule: a wikilink resolves by basename anywhere in the Vault. */
+  /** Transcribe through the server-configured local tool, then insert plain text. */
+   const transcribeAttachment = async (path: string, originatingNotePath = s.activePath) => {
+     const notePath = originatingNotePath;
+     const result = await transcribeAudio({ path });
+     const current = useWorkspaceStore.getState();
+     const note = notePath ? current.sessions[notePath] : undefined;
+     if (notePath && note?.encoding === "utf8" && !current.workspaceFrozen && !current.vaultStale) {
+       const heading = tr("录音转写", "Recording transcript");
+       const text = result.text.trim();
+       if (text) current.insertMarkdownAtSelection(notePath, `\n\n## ${heading}\n\n${text}\n`);
+     }
+     return result;
+   };
+   /** Obsidian rule: a wikilink resolves by basename anywhere in the Vault. */
   const noteStems = new Set(s.tree.entries.filter(entry => entry.kind === "file").map(entry => {
     const name = entry.path.split("/").at(-1) ?? entry.path;
     return name.replace(/\.(md|markdown)$/i, "").toLowerCase();
@@ -175,22 +215,73 @@ export function WorkspaceShell({ leftView, centerView, inspector, onToggleInspec
     return parts.join(" ");
   };
 
+  /**
+   * Export runs entirely over the existing read-only API: the backend resolves
+   * the note's references and hands back the attachments as `data:` URIs, so
+   * the downloaded file — and the printed document — are self-contained. That
+   * matters behind the public reverse proxy, where a per-image request to
+   * `/vault/resource` would need the Vault session header and cannot be used
+   * from inside a printed document.
+   */
+  const exportMarkdown = async (path: string) => {
+    setExportBusy(path); setExportError(null);
+    try {
+      saveBlob(await downloadExportMarkdown(path), exportFilename(path));
+    } catch (error) {
+      setExportError(errorText(error));
+    } finally {
+      setExportBusy(null);
+    }
+  };
+  /** PDF is produced by the browser's own print pipeline ("Save as PDF"). */
+  const exportPdf = async (path: string) => {
+    setExportBusy(path); setExportError(null);
+    try {
+      const manifest = await exportNote(path);
+      const document = buildPrintDocument({ title: manifest.title, bodyHtml: renderExportBody(manifest) });
+      if (!printHtmlDocument(document)) {
+        setExportError(tr("浏览器拦截了打印窗口，请允许本站弹出窗口后重试。", "The browser blocked the print window. Allow pop-ups for this site and retry."));
+      }
+    } catch (error) {
+      setExportError(errorText(error));
+    } finally {
+      setExportBusy(null);
+    }
+  };
+  /**
+   * Outline → document. The editor is always revealed (it owns the caret, so
+   * source/live/split all follow it); the preview is scrolled too whenever it is
+   * on screen, since it renders the same headings in the same source order.
+   */
+  const jumpToHeading = (heading: HeadingEntry, index: number) => {
+    const active = s.activePath;
+    if (!active) return;
+    revealHandlers.current.get(active)?.(heading.line);
+    if (s.editorMode !== "preview" && s.editorMode !== "split") return;
+    const rendered = previewPaneRef.current?.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6");
+    const target = rendered?.[index];
+    if (target && typeof target.scrollIntoView === "function") target.scrollIntoView({ block: "start" });
+  };
   /** Right-click inside a note (toolbar, tab, editor, preview). */
-  const openDocumentMenu = (path: string, x: number, y: number) => setMenu({ path, x, y });
+  const openDocumentMenu = (path: string, x: number, y: number) => setMenu({ path, x, y, source: "document" });
+  /** Right-click inside the editing surface: formatting + insert + document actions. */
+  const openEditorMenu = (path: string, x: number, y: number) => setMenu({ path, x, y, source: "editor" });
   const documentMenuItems = (path: string): ContextMenuItem[] => [
     { id: "child", label: tr("新建子文档", "New nested document"), icon: "note", onSelect: () => createChild(path) },
     { id: "sibling", label: tr("新建同级文档", "New document at this level"), icon: "note", onSelect: () => createSibling(path) },
   ];
   const ancestors = session ? noteAncestorPaths(session.path, new Set(s.tree.entries.filter(entry => entry.kind === "file").map(entry => entry.path))) : [];
   return <div className={`workspace ${s.theme}`} style={{"--sidebar-width": `${s.sidebarWidth}px`, "--inspector-width": `${s.inspectorWidth}px`} as CSSProperties}>
-    {leftOpen && <><aside className="sidebar"><div className="vault-heading"><span className="vault-avatar">L</span><div><strong>{vaultName}</strong><small>{tr("本地笔记库", "LOCAL WORKSPACE")}</small></div><IconButton aria-label={tr("收起侧栏", "Collapse sidebar")} onClick={toggleLeft}><Icon name="panelLeft" size={16}/></IconButton></div>{leftView ?? <Sidebar tree={s.tree} onRetry={() => void s.loadTree()} onToggle={s.toggleDirectory} onOpen={open} onNewNote={apiReady ? () => setNewNoteOpen(true) : undefined} onNewFolder={apiReady ? () => setNewFolderOpen(true) : undefined} onMove={apiReady ? (source, destination) => void s.moveEntry(source, destination).catch(() => undefined) : undefined} onOpenAttachment={path => {setAttachmentPath(path); onShowNotes?.(); setMobileOpen(false);}} onUploadToDirectory={apiReady ? directory => pickAndUpload(directory) : undefined} onRename={apiReady ? (path, newName) => s.renameEntry(path, newName) : undefined} onNewChildNote={apiReady ? createChild : undefined} onNewSiblingNote={apiReady ? createSibling : undefined} onDelete={apiReady ? setDeleting : undefined} activeAttachmentPath={attachmentPath}/>}<TrashPanel open={trashOpen} onToggle={() => setTrashOpen(v => !v)} onOpen={open}/>
+    {leftOpen && <><aside className="sidebar"><div className="vault-heading"><span className="vault-avatar">L</span><div><strong>{vaultName}</strong><small>{tr("本地笔记库", "LOCAL WORKSPACE")}</small></div><IconButton aria-label={tr("收起侧栏", "Collapse sidebar")} onClick={toggleLeft}><Icon name="panelLeft" size={16}/></IconButton></div>{leftView ?? (outlineOpen ? <OutlinePanel path={s.activePath} source={s.activePath ? s.sessions[s.activePath]?.content ?? "" : ""} cursorLine={s.activePath ? cursorLines[s.activePath] ?? 0 : 0} collapsed={new Set(s.activePath ? outlineCollapsed[s.activePath] ?? [] : [])} onToggle={key => { const note = s.activePath; if (!note) return; setOutlineCollapsed(current => { const list = current[note] ?? []; return { ...current, [note]: list.includes(key) ? list.filter(item => item !== key) : [...list, key] }; }); }} onJump={jumpToHeading}/> : <Sidebar tree={s.tree} onRetry={() => void s.loadTree()} onToggle={s.toggleDirectory} onOpen={open} onNewNote={apiReady ? () => setNewNoteOpen(true) : undefined} onNewFolder={apiReady ? () => setNewFolderOpen(true) : undefined} onMove={apiReady ? (source, destination) => void s.moveEntry(source, destination).catch(() => undefined) : undefined} onOpenAttachment={path => {setAttachmentPath(path); onShowNotes?.(); setMobileOpen(false);}} onUploadToDirectory={apiReady ? directory => pickAndUpload(directory) : undefined} onRename={apiReady ? (path, newName) => s.renameEntry(path, newName) : undefined} onNewChildNote={apiReady ? createChild : undefined} onNewSiblingNote={apiReady ? createSibling : undefined} onDelete={apiReady ? setDeleting : undefined} onExportMarkdown={apiReady ? path => void exportMarkdown(path) : undefined} onExportPdf={apiReady ? path => void exportPdf(path) : undefined} activeAttachmentPath={attachmentPath}/>)}<TrashPanel open={trashOpen} onToggle={() => setTrashOpen(v => !v)} onOpen={open}/>
       <div className="sidebar-footer"><span className={`status-dot ${s.tree.status === "ready" ? "ok" : "warn"}`}/>{s.tree.status === "ready" ? tr(`${s.tree.entries.filter(e => e.kind === "file").length} 个文件 · 保存在本机`, `${s.tree.entries.filter(e => e.kind === "file").length} files · Stored locally`) : tr("等待连接笔记库", "Awaiting a vault")}</div></aside><PaneResize value={s.sidebarWidth} onChange={v => s.setPreferences({sidebarWidth:v})} label={tr("调整文件侧栏宽度", "Resize file sidebar")}/>{mobile && <button className="drawer-scrim" aria-label={tr("关闭侧栏", "Close sidebar")} onClick={toggleLeft}/>}</>}
     <main className="workspace-main"><header className="workspace-header">{!leftOpen && <IconButton onClick={toggleLeft} aria-label={tr("显示文件侧栏", "Show file sidebar")} title={tr("显示文件侧栏", "Show file sidebar")}><Icon name="panelLeft" size={17}/></IconButton>}<TabBar tabs={s.tabs} active={s.activePath} sessions={s.sessions} onActivate={activate} onClose={close} onRetry={path => void s.save(path, "manual")} onContextMenu={apiReady ? openDocumentMenu : undefined}/>{!s.tabs.length && <span className="workspace-caption">{tr("工作空间", "Workspace")}</span>}<IconButton className="inspector-toggle" onClick={onToggleInspector} aria-label={tr("切换辅助面板", "Toggle inspector")} aria-pressed={!!inspector} title={tr("笔记关联与 AI 助手", "Note links & AI assistant")}><Icon name="panelRight" size={17}/></IconButton></header>
       {wikilinkError && <div role="alert" className="workspace-error workspace-error-soft"><strong>{tr("无法创建或打开该链接", "Cannot create or open that link")}</strong><span>{wikilinkError}</span><Button onClick={() => setWikilinkError(null)}>{tr("关闭", "Dismiss")}</Button></div>}
       {s.vaultStale && <div role="alert" className="workspace-error"><strong>{tr("笔记库已在其他页面切换", "Vault changed in another page")}</strong><span>{tr("当前草稿仍保留，自动保存已暂停。请在设置中切回原库后处理草稿。", "Your draft is preserved and saving is paused. Switch back to the original vault in Settings to recover it.")}</span><Button onClick={onOpenSettings}>{t.settings.title}</Button></div>}
       {s.attachment.error && <div role="alert" className="workspace-error attachment-error">{errorText(s.attachment.error)}<Button onClick={s.clearAttachmentError}>{t.tabs.close}</Button></div>}
-      {attachmentPath && <AttachmentPreview path={attachmentPath} resolveResourceUrl={vaultResourceUrl} onClose={() => setAttachmentPath(null)}/>}
+      {attachmentPath && <AttachmentPreview path={attachmentPath} resolveResourceUrl={vaultResourceUrl} resolveDocumentPreviewUrl={vaultDocumentPreviewUrl} onTranscribe={apiReady ? path => transcribeAttachment(path, s.activePath) : undefined} onClose={() => setAttachmentPath(null)}/>}
       {treeError && <div role="alert" className="workspace-error workspace-error-soft"><strong>{tr("无法新建文档", "Could not create the document")}</strong><span>{treeError}</span><Button onClick={() => setTreeError(null)}>{tr("关闭", "Dismiss")}</Button></div>}
+      {exportBusy && <div role="status" className="workspace-notice">{tr(`正在导出「${exportBusy}」…`, `Exporting “${exportBusy}”…`)}</div>}
+      {exportError && <div role="alert" className="workspace-error workspace-error-soft"><strong>{tr("导出失败", "Export failed")}</strong><span>{exportError}</span><Button onClick={() => setExportError(null)}>{tr("关闭", "Dismiss")}</Button></div>}
       {centerView && <div className="center-tool">{centerView}</div>}
       <div className="notes-view" hidden={!!centerView}>
         {session ? <><div className="document-toolbar" onContextMenu={apiReady ? event => { event.preventDefault(); openDocumentMenu(session.path, event.clientX, event.clientY); } : undefined}>
@@ -204,15 +295,17 @@ export function WorkspaceShell({ leftView, centerView, inspector, onToggleInspec
           {session.notice && <div role="status" className="workspace-notice">{tr("已保留本地内容；下次保存将覆盖磁盘版本。", session.notice)}</div>}
           {session.error && session.saveState === "error" && <div role="alert" className="workspace-error">{errorText(session.error)}<Button disabled={s.vaultStale} onClick={() => void s.save(session.path, "manual")}>{t.tabs.retry}</Button></div>}
         </> : <div className="welcome"><div className="welcome-symbol"><Icon name="files" size={35}/></div><p className="eyebrow">LOCALNOTE · YOUR THINKING SPACE</p><h1>{tr("给思考，一个安静的空间。", "A quiet space for your thoughts.")}</h1><p>{s.tree.status === "not_configured" ? tr("连接一个本地文件夹，让笔记、关联与灵感在这里汇聚。", "Connect a local folder to bring your notes, connections and ideas together.") : t.workspace.openFilePrompt}</p><div className="welcome-actions"><Button className="primary" onClick={s.tree.status === "not_configured" ? onOpenSettings : onOpenSearch}><Icon name={s.tree.status === "not_configured" ? "folder" : "search"} size={16}/>{s.tree.status === "not_configured" ? tr("连接笔记库", "Connect a vault") : tr("查找笔记", "Find a note")}</Button><Button onClick={onOpenGraph}><Icon name="graph" size={16}/>{tr("浏览知识图谱", "Explore graph")}</Button></div><div className="welcome-footnote"><span/><span>{tr("Markdown 文件 · 本地存储 · 自由连接", "Markdown files · Local storage · Connected ideas")}</span><span/></div></div>}
-        {Object.values(s.sessions).map(doc => <div key={doc.path} hidden={doc.path !== s.activePath} className={`note-surface mode-${s.editorMode}`} style={{"--split-ratio": `${s.splitRatio}%`} as CSSProperties}><section className="editor-panel" hidden={s.editorMode === "preview"} ref={doc.path === s.activePath ? editorPaneRef : undefined}><EditorPane session={doc} theme={s.theme} readOnly={s.workspaceFrozen || s.vaultStale} onChange={value => s.updateContent(doc.path, value)} onSave={() => {timers.current.get(doc.path)?.cancel(); void s.save(doc.path, "manual");}} onUploadFiles={apiReady ? (files, source) => void uploadFiles(files, doc.path, undefined, source) : undefined} onRegisterCaretInsert={handler => s.registerCaretInsert(handler ? (path, markdown) => (path === doc.path ? handler(markdown) : false) : null)}
+        {Object.values(s.sessions).map(doc => <div key={doc.path} hidden={doc.path !== s.activePath} className={`note-surface mode-${s.editorMode}`} style={{"--split-ratio": `${s.splitRatio}%`} as CSSProperties}><section className="editor-panel" hidden={s.editorMode === "preview"} ref={doc.path === s.activePath ? editorPaneRef : undefined}><EditorPane session={doc} theme={s.theme} readOnly={s.workspaceFrozen || s.vaultStale} onChange={value => s.updateContent(doc.path, value)} onSave={() => {timers.current.get(doc.path)?.cancel(); void s.save(doc.path, "manual");}} onUploadFiles={apiReady ? (files, source) => void uploadFiles(files, doc.path, undefined, source) : undefined} onRegisterCaretInsert={handler => s.registerCaretInsert(handler ? (path, markdown) => (path === doc.path ? handler(markdown) : false) : null)} onRegisterRevealLine={(path, handler) => { if (handler) revealHandlers.current.set(path, handler); else revealHandlers.current.delete(path); }} onCursorLine={(path, line) => setCursorLines(current => current[path] === line ? current : { ...current, [path]: line })} onRegisterCommands={(path, commands) => { if (commands) formatCommands.current.set(path, commands); else formatCommands.current.delete(path); }}
       livePreview={s.editorMode === "live" ? { notePath: doc.path, // A relative reference in the note resolves against the note's own
       // directory first (same rule as the preview pane); passing it to the
       // resource endpoint verbatim 404s for every note in a sub-folder.
-      resolveResourceUrl: (path) => { const resolved = resolveVaultRelativePath(doc.path, path); return resolved ? vaultResourceUrl(resolved) : null; }, onOpenLink: (target, kind) => { if (kind === "wikilink") openWikilink(target); else void s.openFile(target).catch(() => undefined); }, onToggleTask: (index) => { s.toggleTask(doc.path, index); } } : null} attachmentBusy={s.attachment.busy} attachmentHint={tr("拖到此处或粘贴图片", "Drop here or paste an image")} onContextMenuAt={apiReady ? openDocumentMenu : undefined}/></section><div hidden={s.editorMode !== "split"} className="split-divider"><PaneResize value={s.splitRatio} onChange={s.setSplitRatio} percent label={tr("调整编辑与预览比例", "Resize editor and preview")}/></div><section className="preview-panel" hidden={s.editorMode === "source" || s.editorMode === "live"} ref={doc.path === s.activePath ? previewPaneRef : undefined}><PreviewPane source={doc.content} notePath={doc.path} resolveResourceUrl={vaultResourceUrl} wikilinkExists={wikilinkExists} onOpenWikilink={openWikilink} onToggleTask={index => s.toggleTask(doc.path, index)} attachmentBusy={s.attachment.busy} disabled={s.workspaceFrozen || s.vaultStale} onDropFiles={apiReady ? files => void uploadFiles(files, doc.path, undefined, "preview-drop") : undefined} onContextMenuAt={apiReady ? openDocumentMenu : undefined}/></section></div>)}
+      resolveResourceUrl: (path) => resolveAttachmentUrl(doc.path, path, vaultResourceUrl), resolveDocumentUrl: (path) => resolveAttachmentUrl(doc.path, path, vaultDocumentPreviewUrl), onOpenLink: (target, kind) => { if (kind === "wikilink") openWikilink(target); else void s.openFile(target).catch(() => undefined); }, onToggleTask: (index) => { s.toggleTask(doc.path, index); }, onTranscribeAudio: (target) => { const resolved = resolveVaultRelativePath(doc.path, target); if (resolved) void transcribeAttachment(resolved, doc.path); } } : null} attachmentBusy={s.attachment.busy} attachmentHint={tr("拖到此处或粘贴图片", "Drop here or paste an image")} onContextMenuAt={apiReady ? openEditorMenu : undefined}/></section><div hidden={s.editorMode !== "split"} className="split-divider"><PaneResize value={s.splitRatio} onChange={s.setSplitRatio} percent label={tr("调整编辑与预览比例", "Resize editor and preview")}/></div><section className="preview-panel" hidden={s.editorMode === "source" || s.editorMode === "live"} ref={doc.path === s.activePath ? previewPaneRef : undefined}><PreviewPane source={doc.content} notePath={doc.path} resolveResourceUrl={vaultResourceUrl} resolveDocumentPreviewUrl={vaultDocumentPreviewUrl} wikilinkExists={wikilinkExists} onOpenWikilink={openWikilink} onToggleTask={index => s.toggleTask(doc.path, index)} onTranscribeAudio={apiReady ? path => void transcribeAttachment(path, doc.path) : undefined} attachmentBusy={s.attachment.busy} disabled={s.workspaceFrozen || s.vaultStale} onDropFiles={apiReady ? files => void uploadFiles(files, doc.path, undefined, "preview-drop") : undefined} onContextMenuAt={apiReady ? openDocumentMenu : undefined}/></section></div>)}
       </div>
     </main>
     {inspector && <><button className="inspector-scrim" aria-label={tr("关闭辅助面板", "Close inspector drawer")} onClick={onToggleInspector}/><PaneResize reverse value={s.inspectorWidth} onChange={v => s.setPreferences({inspectorWidth:v})} label={tr("调整辅助面板宽度", "Resize inspector")}/><aside className="inspector">{inspector}</aside></>}
-    {menu && menu.path && <ContextMenu x={menu.x} y={menu.y} label={tr("文档操作", "Document actions")} items={documentMenuItems(menu.path)} onClose={() => setMenu(null)}/>}
+    {menu && menu.path && (menu.source === "editor"
+      ? <FormatMenu x={menu.x} y={menu.y} label={t.format.menu} commands={formatCommands.current.get(menu.path)} disabled={!s.sessions[menu.path] || s.sessions[menu.path]!.encoding !== "utf8" || s.workspaceFrozen || s.vaultStale} actions={documentMenuItems(menu.path).map(item => ({ id: item.id, label: item.label, icon: item.icon ?? "note", onSelect: item.onSelect! }))} onClose={() => setMenu(null)}/>
+      : <ContextMenu x={menu.x} y={menu.y} label={tr("文档操作", "Document actions")} items={documentMenuItems(menu.path)} onClose={() => setMenu(null)}/>)}
     <ConfirmDialog open={deleting !== null} busy={deleteBusy} title={tr("移到回收站", "Move to recycle bin")} message={deleting ? deleteSummary(deleting) : ""} onCancel={() => setDeleting(null)} onConfirm={() => void confirmDelete()}/>
     <NewNoteDialog open={newNoteOpen} onClose={() => setNewNoteOpen(false)}/>
     <NewFolderDialog open={newFolderOpen} onClose={() => setNewFolderOpen(false)}/>

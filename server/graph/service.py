@@ -33,6 +33,9 @@ Node/edge rules implemented here (fixed contract for M5, mirrored in
 from __future__ import annotations
 
 import logging
+import math
+import struct
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -40,6 +43,7 @@ from typing import Literal
 from ..config import GraphSettings
 from ..index.schemas import GraphSnapshot
 from ..index.service import DerivedIndexService
+from ..rag.vector.sqlite import SqliteVectorStore
 from ..vault.errors import InvalidRequest, PathNotFound
 from .schemas import GraphEdge, GraphNode, GraphPage, GraphResponse
 
@@ -112,8 +116,7 @@ def _build_maps(snapshot: GraphSnapshot) -> _GraphMaps:
         tags_by_note.setdefault(tag.note_path, []).append((tag.tag, tag.tag_folded))
         displays_by_folded.setdefault(tag.tag_folded, []).append(tag.tag)
     tag_displays = {
-        folded: min(displays, key=_tag_display)
-        for folded, displays in displays_by_folded.items()
+        folded: min(displays, key=_tag_display) for folded, displays in displays_by_folded.items()
     }
     return _GraphMaps(
         note_titles=note_titles,
@@ -212,7 +215,7 @@ def _scope_nodes_and_edges(
     edges: list[GraphEdge] = []
     # tag edges: note -> tag, in note/seq order of the tags table
     for path in sorted(note_paths, key=str.casefold):
-        for tag, folded in maps.tags_by_note.get(path, ()):
+        for _tag, folded in maps.tags_by_note.get(path, ()):
             if folded not in tag_foldeds:
                 continue
             edges.append(
@@ -316,6 +319,7 @@ def _page_response(
     the payload never contains a normal edge to a missing node (PLAN-M5
     §5.2).  ``page.truncated`` reports either condition.
     """
+    edges.sort(key=lambda edge: (edge.type, edge.source, edge.target, edge.id))
     total_nodes = len(nodes)
     total_edges = len(edges)
     page_nodes = nodes[offset : offset + limit]
@@ -354,9 +358,7 @@ def _invalid(message: str) -> InvalidRequest:
 def _validated_limit(value: int | None, settings: GraphSettings) -> int:
     limit = settings.default_limit if value is None else value
     if limit < 1 or limit > settings.max_limit:
-        raise _invalid(
-            f"limit must be between 1 and {settings.max_limit}"
-        )
+        raise _invalid(f"limit must be between 1 and {settings.max_limit}")
     return limit
 
 
@@ -404,9 +406,163 @@ class GraphService:
         index: DerivedIndexService,
         *,
         settings: GraphSettings | None = None,
+        vector_store: SqliteVectorStore | None = None,
+        embedding_provider=None,
+        embedding_version: str = "",
     ) -> None:
         self._index = index
         self._settings = settings or GraphSettings()
+        self._vector_store = vector_store
+        self._embedding_provider = embedding_provider
+        self._embedding_version = embedding_version
+        self._semantic_lock = threading.RLock()
+        self._semantic_cache: dict[tuple, dict[str, list[tuple[str, float]]]] = {}
+
+    def _semantic_projection(
+        self, paths: set[str], *, include: bool
+    ) -> tuple[list[GraphEdge], str, int]:
+        if not include or self._vector_store is None or self._embedding_provider is None:
+            return [], "unavailable", 0
+        if len(paths) > 500:
+            return [], "limited", 0
+        provider = self._embedding_provider
+        if (
+            bool(getattr(provider, "is_degraded", False))
+            or "hash" in type(provider).__name__.lower()
+        ):
+            return [], "degraded", 0
+        try:
+            state = self._vector_store.state()
+            model = str(getattr(provider, "model", ""))
+            configured_dimension = int(getattr(provider, "dimension", 0) or 0)
+            dimension = configured_dimension or int(state.embedding_dimension or 0)
+            version = self._embedding_version
+            if (
+                state.status not in {"ready", "pending", "failed"}
+                or not state.chunk_count
+                or not model
+                or not dimension
+            ):
+                return [], "outdated", 0
+            if state.embedding_provider != type(provider).__name__:
+                return [], "outdated", 0
+            generation = self._vector_store.generation
+            if (
+                state.embedding_model != model
+                or state.embedding_dimension != dimension
+                or state.embedding_version != version
+                or (configured_dimension > 0 and state.embedding_dimension != configured_dimension)
+            ):
+                return [], "outdated", 0
+            entries = self._index.note_fingerprints(paths)
+            if not entries:
+                return [], "outdated", 0
+            key = (
+                generation,
+                model,
+                dimension,
+                version,
+                tuple(sorted((p, entries[p]) for p in paths)),
+            )
+            with self._semantic_lock:
+                neighbors = self._semantic_cache.get(key)
+            if neighbors is None:
+                if not self._vector_store.semantic_embeddings_compatible(
+                    model=model, dimension=dimension, version=version
+                ):
+                    return [], "outdated", 0
+                rows = self._vector_store.semantic_note_vectors(
+                    sorted(paths), model=model, dimension=dimension, version=version
+                )
+                chunks: dict[str, list[tuple[float, ...]]] = {}
+                doc_meta: dict[str, tuple[str, int]] = {}
+                invalid_paths: set[str] = set()
+                for row in rows:
+                    path = str(row["path"])
+                    rowmodel = str(row["model"])
+                    rowversion = str(row["embedding_version"])
+                    rowdim = int(row["dimension"])
+                    embedded = int(row["embedded_count"])
+                    packed = bytes(row["vector"])
+                    vectors = (
+                        list(struct.iter_unpack("<" + "f" * rowdim, packed))
+                        if rowdim > 0 and embedded > 0 and len(packed) == embedded * rowdim * 4
+                        else []
+                    )
+                    if (
+                        rowmodel != model
+                        or rowversion != version
+                        or rowdim != dimension
+                        or not vectors
+                        or int(row["chunk_count"]) != embedded
+                    ):
+                        invalid_paths.add(path)
+                        continue
+                    chunks.setdefault(path, []).extend(vectors)
+                    doc_meta[path] = (str(row["sha256"]), embedded)
+                valid_paths = {
+                    path
+                    for path, vectors in chunks.items()
+                    if path in entries
+                    and path not in invalid_paths
+                    and doc_meta.get(path, (None, 0))[0] == entries[path]
+                    and doc_meta.get(path, (None, 0))[1] == len(vectors)
+                }
+                chunks = {path: vectors for path, vectors in chunks.items() if path in valid_paths}
+                if self._vector_store.generation != generation:
+                    return [], "outdated", 0
+                centroids: dict[str, tuple[float, ...]] = {}
+                for path, vectors in chunks.items():
+                    mean = [
+                        math.fsum(v[i] for v in vectors) / len(vectors) for i in range(dimension)
+                    ]
+                    norm = math.sqrt(math.fsum(x * x for x in mean))
+                    if norm:
+                        centroids[path] = tuple(x / norm for x in mean)
+                paths_ordered = sorted(centroids)
+                top: dict[str, list[tuple[str, float]]] = {
+                    path: [] for path in paths_ordered
+                }
+                # Each pair has the same cosine score in both directions.
+                # Score it once in the Python 3.12 C kernel. A generator of
+                # Python multiplications makes the first graph load much slower.
+                for position, source in enumerate(paths_ordered):
+                    vector = centroids[source]
+                    for target in paths_ordered[position + 1 :]:
+                        score = math.sumprod(vector, centroids[target])
+                        if score >= 0.84:
+                            top[source].append((target, score))
+                            top[target].append((source, score))
+                neighbors = {
+                    source: sorted(ranked, key=lambda item: (-item[1], item[0]))[:3]
+                    for source, ranked in top.items()
+                }
+                with self._semantic_lock:
+                    self._semantic_cache = {key: neighbors}
+            edges = []
+            for source, candidates in neighbors.items():
+                for target, score in candidates:
+                    if source >= target or not any(
+                        n == source for n, _ in neighbors.get(target, ())
+                    ):
+                        continue
+                    edges.append(
+                        GraphEdge(
+                            id="semantic:"
+                            + _pct(min(source, target))
+                            + "#"
+                            + _pct(max(source, target)),
+                            source=note_id(source),
+                            target=note_id(target),
+                            type="semantic",
+                            directed=False,
+                            score=round(score, 6),
+                        )
+                    )
+            return edges, "ready", len(neighbors)
+        except Exception:
+            logger.exception("semantic graph projection unavailable")
+            return [], "degraded", 0
 
     # ------------------------------------------------------------------
     # Global scope (PLAN-M5 §5.3)
@@ -419,6 +575,7 @@ class GraphService:
         offset: int = 0,
         tag: str | None = None,
         include_broken: bool = True,
+        include_semantic: bool = True,
     ) -> GraphResponse:
         self._index.assert_ready()
         bound_limit = _validated_limit(limit, self._settings)
@@ -428,11 +585,7 @@ class GraphService:
         maps = _build_maps(snapshot)
         note_paths = {note.path for note in snapshot.notes}
         if folded is not None:
-            note_paths = {
-                path
-                for path in note_paths
-                if _note_has_tag(maps, path, folded)
-            }
+            note_paths = {path for path in note_paths if _note_has_tag(maps, path, folded)}
         nodes, edges = _scope_nodes_and_edges(
             maps,
             snapshot,
@@ -440,7 +593,14 @@ class GraphService:
             folded_filter=folded,
             include_broken=include_broken,
         )
-        return _page_response(
+        semantic, semantic_status, covered = self._semantic_projection(
+            note_paths, include=include_semantic
+        )
+        node_ids = {node.id for node in nodes}
+        edges.extend(
+            edge for edge in semantic if edge.source in node_ids and edge.target in node_ids
+        )
+        result = _page_response(
             scope="global",
             root=None,
             nodes=nodes,
@@ -448,6 +608,9 @@ class GraphService:
             limit=bound_limit,
             offset=bound_offset,
             max_edges=self._settings.max_edges,
+        )
+        return result.model_copy(
+            update={"semantic_status": semantic_status, "semantic_covered_nodes": covered}
         )
 
     # ------------------------------------------------------------------
@@ -464,6 +627,7 @@ class GraphService:
         offset: int = 0,
         tag: str | None = None,
         include_broken: bool = True,
+        include_semantic: bool = True,
     ) -> GraphResponse:
         self._index.assert_ready()
         path = _validated_input_text(note, "note path")
@@ -498,9 +662,7 @@ class GraphService:
             frontier = neighbours
 
         if folded is not None:
-            matched = {
-                item for item in visited if _note_has_tag(maps, item, folded)
-            }
+            matched = {item for item in visited if _note_has_tag(maps, item, folded)}
             if path in visited and path not in matched:
                 # Root kept even when it does not carry the filter tag
                 # (PLAN-M5 §10.2: keep the root and let the UI hint at the
@@ -515,7 +677,34 @@ class GraphService:
             folded_filter=folded,
             include_broken=include_broken,
         )
-        return _page_response(
+        candidates = {path} | set(sorted(all_notes - {path})[:499])
+        semantic, semantic_status, covered = self._semantic_projection(
+            candidates, include=include_semantic
+        )
+        if len(all_notes) > 500 and include_semantic:
+            semantic_status = "limited"
+        root_id = note_id(path)
+        semantic_paths = {
+            edge.target if edge.source == root_id else edge.source
+            for edge in semantic
+            if edge.source == root_id or edge.target == root_id
+        }
+        # Decode via the known edge endpoints, avoiding assumptions about path escaping.
+        for item in snapshot.notes:
+            if note_id(item.path) in semantic_paths:
+                visited.add(item.path)
+        if folded is not None:
+            visited = {
+                item for item in visited if item == path or _note_has_tag(maps, item, folded)
+            }
+        nodes, edges = _scope_nodes_and_edges(
+            maps, snapshot, note_paths=visited, folded_filter=folded, include_broken=include_broken
+        )
+        visible_ids = {node.id for node in nodes}
+        edges.extend(
+            edge for edge in semantic if edge.source in visible_ids and edge.target in visible_ids
+        )
+        result = _page_response(
             scope="local",
             root=path,
             nodes=nodes,
@@ -523,6 +712,9 @@ class GraphService:
             limit=bound_limit,
             offset=bound_offset,
             max_edges=self._settings.max_edges,
+        )
+        return result.model_copy(
+            update={"semantic_status": semantic_status, "semantic_covered_nodes": covered}
         )
 
     # ------------------------------------------------------------------
@@ -537,6 +729,7 @@ class GraphService:
         limit: int | None = None,
         offset: int = 0,
         include_broken: bool = True,
+        include_semantic: bool = True,
     ) -> GraphResponse:
         self._index.assert_ready()
         folded = _validated_tag_filter(tag)
@@ -547,11 +740,7 @@ class GraphService:
         maps = _build_maps(snapshot)
         if folded not in maps.tag_displays:
             raise PathNotFound(path=tag)
-        note_paths = {
-            path
-            for path in maps.tags_by_note
-            if _note_has_tag(maps, path, folded)
-        }
+        note_paths = {path for path in maps.tags_by_note if _note_has_tag(maps, path, folded)}
         nodes, edges = _scope_nodes_and_edges(
             maps,
             snapshot,
@@ -559,7 +748,14 @@ class GraphService:
             folded_filter=folded,
             include_broken=include_broken,
         )
-        return _page_response(
+        semantic, semantic_status, covered = self._semantic_projection(
+            note_paths, include=include_semantic
+        )
+        node_ids = {node.id for node in nodes}
+        edges.extend(
+            edge for edge in semantic if edge.source in node_ids and edge.target in node_ids
+        )
+        result = _page_response(
             scope="tag",
             root=None,
             nodes=nodes,
@@ -567,6 +763,9 @@ class GraphService:
             limit=bound_limit,
             offset=bound_offset,
             max_edges=self._settings.max_edges,
+        )
+        return result.model_copy(
+            update={"semantic_status": semantic_status, "semantic_covered_nodes": covered}
         )
 
 

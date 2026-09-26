@@ -4,7 +4,7 @@ import type { FileTreeState } from "@localnote/workspace";
 import { useWorkspaceStore } from "@localnote/workspace";
 import { useI18n } from "../i18n";
 
-export function Sidebar({ tree, onRetry, onToggle, onOpen, onNewNote, onNewFolder, onMove, onOpenAttachment, onUploadToDirectory, onRename, activeAttachmentPath, onNewChildNote, onNewSiblingNote, onDelete }: {
+export function Sidebar({ tree, onRetry, onToggle, onOpen, onNewNote, onNewFolder, onMove, onOpenAttachment, onUploadToDirectory, onRename, activeAttachmentPath, onNewChildNote, onNewSiblingNote, onDelete, onExportMarkdown, onExportPdf }: {
   tree: FileTreeState;
   onRetry: () => void;
   onToggle: (p: string) => void;
@@ -22,6 +22,10 @@ export function Sidebar({ tree, onRetry, onToggle, onOpen, onNewNote, onNewFolde
   onNewSiblingNote?: (path: string) => void;
   /** Ask to delete the right-clicked file or folder. */
   onDelete?: (path: string) => void;
+  /** Export one note as a self-contained Markdown file. */
+  onExportMarkdown?: (path: string) => void;
+  /** Open the print view that saves one note as a PDF. */
+  onExportPdf?: (path: string) => void;
 }) {
   const { tr, errorText } = useI18n();
   const active = useWorkspaceStore(s => s.activePath);
@@ -37,7 +41,7 @@ export function Sidebar({ tree, onRetry, onToggle, onOpen, onNewNote, onNewFolde
       </div>
     </header>
     {tree.status === "ready" && tree.entries.length
-      ? <FileTree entries={tree.entries} expanded={tree.expandedPaths} collapsed={tree.collapsedPaths} activePath={active} onToggle={onToggle} onOpen={onOpen} onMove={onMove} onOpenAttachment={onOpenAttachment} onUploadToDirectory={onUploadToDirectory} onRename={onRename} activeAttachmentPath={activeAttachmentPath} onNewChildNote={onNewChildNote} onNewSiblingNote={onNewSiblingNote} onNewRootNote={onNewNote} onDelete={onDelete}/>
+      ? <FileTree entries={tree.entries} expanded={tree.expandedPaths} collapsed={tree.collapsedPaths} activePath={active} onToggle={onToggle} onOpen={onOpen} onMove={onMove} onOpenAttachment={onOpenAttachment} onUploadToDirectory={onUploadToDirectory} onRename={onRename} activeAttachmentPath={activeAttachmentPath} onNewChildNote={onNewChildNote} onNewSiblingNote={onNewSiblingNote} onNewRootNote={onNewNote} onDelete={onDelete} onExportMarkdown={onExportMarkdown} onExportPdf={onExportPdf}/>
       : <div className="side-empty"><Icon name="folder" size={28}/><p role="status">{messages[tree.status]}</p>{tree.status === "ready" && (onNewNote || onNewFolder) && <div className="side-empty-actions">{onNewNote && <button type="button" className="side-empty-action" onClick={onNewNote}><Icon name="note" size={14}/>{tr("新建第一篇笔记", "Create your first note")}</button>}{onNewFolder && <button type="button" className="side-empty-action" onClick={onNewFolder}><Icon name="folder" size={14}/>{tr("新建文件夹", "New folder")}</button>}</div>}</div>}
   </section>;
 }

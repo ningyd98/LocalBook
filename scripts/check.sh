@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # LocalNote Phase 0 — local verification gate.
 #
-# Runs, in order: backend pytest, protocol+web typecheck, frontend Vitest,
-# frontend production build. Expects dependencies installed (see README
-# quick start / scripts/dev.sh).
+# Runs backend pytest, all workspace typechecks, frontend Vitest/build and Ruff.
+# Expects dependencies installed (see README quick start / scripts/dev.sh).
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,6 +19,13 @@ if [[ -f "$ROOT/.nvmrc" && -n "${NVM_DIR:-$HOME/.nvm}" ]]; then
   fi
 fi
 export COREPACK_HOME="${COREPACK_HOME:-$ROOT/.cache/corepack}"
+# In the sandbox the project-owned shim is the only stable pnpm entry point;
+# putting its directory on PATH also lets package scripts recursively invoke
+# `pnpm` without depending on a global shim.
+if [[ -x "$ROOT/.cache/pnpm-bin/pnpm" ]]; then
+  PATH="$ROOT/.cache/pnpm-bin:$PATH"
+  export PATH
+fi
 
 PNPM_CMD=()
 if command -v pnpm >/dev/null 2>&1; then
@@ -35,17 +41,23 @@ PY_VENV="$ROOT/.venv/bin/python"
 [[ -x "$PY_VENV" ]] || { echo "error: $PY_VENV missing — run 'uv sync --dev' first" >&2; exit 1; }
 [[ -d node_modules ]] || { echo "error: node_modules missing — run 'pnpm install' first" >&2; exit 1; }
 
+# Enforce the complete Ruff rule set on changed production Python files.
+echo "== Ruff (strict changed production files) =="
+"$PY_VENV" scripts/check-ruff-diff.py
+
+# Stage 1: enforce syntax-critical rules across all production modules.
+echo "== Ruff (production syntax-critical rules) =="
+"$ROOT/.venv/bin/ruff" check server --select E4,E7,E9 --exclude '*/tests/*'
+
+# Stage 2: report full historical reader/vault debt with file:line diagnostics.
+echo "== Ruff (reader/vault historical debt inventory; non-blocking) =="
+"$ROOT/.venv/bin/ruff" check server/reader server/vault --output-format concise --exit-zero
+
+echo "== typecheck (all workspace packages) =="
+"${PNPM_CMD[@]}" typecheck
+
 echo "== backend pytest =="
 "$PY_VENV" -m pytest -q
-
-echo "== typecheck (@localnote/protocol) =="
-"${PNPM_CMD[@]}" --filter @localnote/protocol typecheck
-
-echo "== typecheck (@localnote/graph) =="
-"${PNPM_CMD[@]}" --filter @localnote/graph typecheck
-
-echo "== typecheck (@localnote/web) =="
-"${PNPM_CMD[@]}" --filter @localnote/web typecheck
 
 echo "== frontend tests (vitest run) =="
 "${PNPM_CMD[@]}" --filter @localnote/web test

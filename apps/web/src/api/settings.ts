@@ -63,10 +63,11 @@ export const RAG_PATCH_KEYS = [
   "chunk_target_tokens", "chunk_max_tokens", "chunk_overlap_tokens",
   "fts_top_k", "vector_top_k", "context_top_k",
   "reranker_enabled", "reranker_provider", "reranker_base_url", "reranker_model",
+  "reranker_api_key",
   "index_on_startup",
   "link_retrieval_enabled", "link_top_k",
   "wikilink_weight", "backlink_weight", "tag_weight", "graph_weight",
-] as const satisfies readonly (keyof RagConfiguration | "embedding_api_key")[];
+] as const satisfies readonly (keyof RagConfiguration | "embedding_api_key" | "reranker_api_key")[];
 export type RagPatchKey = (typeof RAG_PATCH_KEYS)[number];
 /**
  * Build a settings PATCH body from the server-declared key set only.
@@ -89,7 +90,7 @@ export function ragPatchPayload(
   return payload as RagConfigurationPatch;
 }
 /** Partial edit; ``null``/omitted keeps the stored value, ``""`` clears the key. */
-export type RagConfigurationPatch = Partial<Omit<RagConfiguration, "embedding_api_key_set">> & { embedding_api_key?: string | null };
+export type RagConfigurationPatch = Partial<Omit<RagConfiguration, "embedding_api_key_set">> & { embedding_api_key?: string | null; reranker_api_key?: string | null };
 export interface ServiceSettings {
   revision: number; vault_session_id: string; changing: boolean; version: string;
   vault: { root: string | null; status: "ready" | "not_configured" | "unavailable" };
@@ -122,6 +123,16 @@ export const testReranker = (args: { provider?: "openai_compatible"; base_url: s
 /** Persist RAG settings; the server rebuilds only the derived RAG layer. */
 export const updateRagSettings = (rag: RagConfigurationPatch, expected_revision: number) => request<ServiceSettings>("/settings/rag", json({ rag, expected_revision }, "PATCH"));
 export const switchVault = (root: string, expected_revision: number, vault_session_id: string) => request<ServiceSettings>("/settings/vault/switch", json({ root, expected_revision, vault_session_id }));
+
+/** A Reader code only becomes exchangeable for an access token after owner approval. */
+export interface ReaderPairingApproval {
+  approved: true;
+  device_name: string;
+  device_type: string;
+  expires_at: number;
+}
+export const approveReaderPairing = (pairing_token: string) =>
+  request<ReaderPairingApproval>("/settings/reader/pairing/approve", json({ pairing_token }));
 
 /** The saved provider library plus which entry is currently applied. */
 export const fetchAIProfiles = () => request<AIProfileList>("/settings/ai/profiles");

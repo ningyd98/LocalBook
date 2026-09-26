@@ -32,6 +32,8 @@ export function RagPanel({
   const [answer, setAnswer] = useState<RagQueryResponse | null>(null);
   const [status, setStatus] = useState<RagIndexStatusResponse | null>(null);
   const [busy, setBusy] = useState(false);
+  const [stage, setStage] = useState("");
+  const [requestController, setRequestController] = useState<AbortController | null>(null);
   const [error, setError] = useState<{ code?: string; message: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -53,10 +55,14 @@ export function RagPanel({
   const ask = () => {
     if (!question.trim() || busy) return;
     setBusy(true);
+    setStage(tr("正在检索证据…", "Retrieving evidence…"));
     setError(null);
     setNotice(null);
-    void ragQuery({ query: question.trim() })
+    const controller = new AbortController();
+    setRequestController(controller);
+    void ragQuery({ query: question.trim() }, controller.signal)
       .then((response) => {
+        setStage(tr("检索和生成完成", "Retrieval and generation complete"));
         setAnswer(response);
         if (response.degraded.includes("generation_unavailable")) {
           setNotice(
@@ -69,13 +75,17 @@ export function RagPanel({
       })
       .catch((cause: unknown) => {
         setAnswer(null);
+        if (cause instanceof DOMException && cause.name === "AbortError") {
+          setStage(tr("已取消请求", "Request cancelled"));
+          return;
+        }
         setError(
           cause instanceof ApiError
             ? { code: cause.code, message: cause.message }
             : { message: errorText("unknown") },
         );
       })
-      .finally(() => setBusy(false));
+      .finally(() => { setBusy(false); setRequestController(null); });
   };
 
   const rebuild = () => {
@@ -135,9 +145,11 @@ export function RagPanel({
 
       {busy && (
         <p role="status" className="ai-hint">
-          {tr("正在检索并生成…", "Retrieving and generating…")}
+          {stage || tr("正在检索并生成…", "Retrieving and generating…")}
+          {requestController && <Button onClick={() => requestController.abort()}>{tr("取消", "Cancel")}</Button>}
         </p>
       )}
+      {!busy && stage && <p role="status" className="ai-hint">{stage}</p>}
       {notice && <p className="ai-hint">{notice}</p>}
       {error && (
         <p role="alert" className="ai-error">
@@ -180,9 +192,22 @@ export function RagPanel({
               <dd>{answer.retrieval_stats.context_chunks}</dd>
             </div>
             <div>
-              <dt>{tr("检索耗时", "Retrieval")}</dt>
+              <dt>{tr("检索总耗时", "Total retrieval")}</dt>
               <dd>{Math.round(answer.retrieval_stats.retrieval_ms)} ms</dd>
             </div>
+            <div>
+              <dt>{tr("向量检索", "Vector retrieval")}</dt>
+              <dd>{Math.round(answer.retrieval_stats.embedding_ms)} ms</dd>
+            </div>
+            <div>
+              <dt>{tr("结果重排", "Reranking")}</dt>
+              <dd>{Math.round(answer.retrieval_stats.rerank_ms)} ms</dd>
+            </div>
+            <div>
+              <dt>{tr("模型生成", "Model generation")}</dt>
+              <dd>{Math.round(answer.retrieval_stats.generation_ms)} ms</dd>
+            </div>
+            <div><dt>{tr("请求总耗时", "Total request")}</dt><dd>{Math.round(answer.retrieval_stats.total_ms ?? (answer.retrieval_stats.retrieval_ms + answer.retrieval_stats.generation_ms))} ms</dd></div>
           </dl>
           {answer.sources.length > 0 && (
             <>

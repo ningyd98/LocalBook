@@ -14,6 +14,8 @@ from server.ai.adapters.openai_compatible import OpenAICompatibleAdapter
 from server.ai.service import AIStatusService
 from server.ai.workflows import AIWorkflowService
 from server.config import Settings
+from server.documents.service import DocumentPreviewService
+from server.export.service import ExportService
 from server.graph.service import GraphService
 from server.history.repository import HistoryRepository
 from server.history.service import HistoryService
@@ -25,6 +27,7 @@ from server.rag.errors import RagUnavailable
 from server.rag.service import RagService
 from server.scheduler.service import SchedulerService
 from server.search.service import SearchService
+from server.transcription.service import LocalTranscriptionService
 from server.vault.errors import VaultNotConfigured, VaultUnavailable
 from server.vault.service import VaultService
 from server.vault.trash import TrashService
@@ -51,7 +54,9 @@ def get_ai_status_service(request: Request) -> AIStatusService:
     ai = _settings_from_app(request).ai
     # The applied provider profile (PLAN-PROVIDERS) rides along so /ai/status
     # can name the route it probed.
-    return AIStatusService.from_ai_settings(ai if ai.enabled else ai.model_copy(update={"base_url": None}))
+    return AIStatusService.from_ai_settings(
+        ai if ai.enabled else ai.model_copy(update={"base_url": None})
+    )
 
 
 def get_ai_workflow_service(request: Request) -> AIWorkflowService:
@@ -107,6 +112,20 @@ def get_vault_service(request: Request) -> VaultService:
     return service
 
 
+def get_transcription_service(request: Request) -> LocalTranscriptionService:
+    """Bind local speech-to-text to the active Vault and server settings."""
+    vault = get_vault_service(request)
+    settings = _settings_from_app(request)
+    return LocalTranscriptionService(vault, settings.transcription)
+
+
+def get_document_preview_service(request: Request) -> DocumentPreviewService:
+    """Bind local Office/PDF rendering to the active Vault and settings."""
+    vault = get_vault_service(request)
+    settings = _settings_from_app(request)
+    return DocumentPreviewService(vault, settings.document_preview)
+
+
 def get_trash_service(request: Request) -> TrashService:
     """The recycle bin of the active Vault (soft delete + restore + retention).
 
@@ -121,6 +140,27 @@ def get_trash_service(request: Request) -> TrashService:
     settings = _settings_from_app(request)
     service = TrashService(vault, retention_days=settings.vault.trash_retention_days)
     request.app.state.trash_service = service
+    return service
+
+
+def get_export_service(request: Request) -> ExportService:
+    """Read-only note export bound to the active Vault and its size caps.
+
+    Like the trash service it is cached per app instance and rebuilt whenever
+    the active Vault changes; ``ExportService`` itself keeps no per-request
+    state (every call re-reads the note).
+    """
+    vault = get_vault_service(request)
+    service = getattr(request.app.state, "export_service", None)
+    if service is not None and service.vault is vault:
+        return service
+    settings = _settings_from_app(request)
+    service = ExportService(
+        vault,
+        max_attachment_bytes=settings.export.max_attachment_bytes,
+        max_total_bytes=settings.export.max_total_bytes,
+    )
+    request.app.state.export_service = service
     return service
 
 
@@ -171,7 +211,8 @@ def _rag_generator(settings, request: Request):
         return None
     from ..ai.adapters.base import ChatMessage
     from ..ai.adapters.openai_compatible import OpenAICompatibleAdapter
-    from ..ai.capabilities import resolve_chat_model
+    from ..ai.capabilities import resolve_chat_model_for_request
+    from ..rag.api_schemas import RagAnswerPayload
 
     adapter = OpenAICompatibleAdapter(
         ai.base_url,
@@ -183,9 +224,7 @@ def _rag_generator(settings, request: Request):
     )
 
     async def generate(system_prompt: str, user_prompt: str) -> tuple[str, str]:
-        model = resolve_chat_model(
-            await adapter.list_models(), ai.chat_model, ai.qwen_match_pattern
-        )
+        model = await resolve_chat_model_for_request(adapter, ai.chat_model, ai.qwen_match_pattern)
         result = await adapter.chat(
             model=model,
             messages=[
@@ -193,7 +232,7 @@ def _rag_generator(settings, request: Request):
                 ChatMessage("user", user_prompt),
             ],
             temperature=ai.temperature,
-            response_schema=None,
+            response_schema=RagAnswerPayload.model_json_schema(),
             timeout_seconds=ai.request_timeout_seconds,
             max_output_tokens=ai.max_output_tokens,
         )
@@ -217,7 +256,29 @@ def get_search_service(request: Request) -> SearchService:
 
 
 def get_graph_service(request: Request) -> GraphService:
-    return GraphService(get_index_service(request), settings=_settings_from_app(request).graph)
+    index = get_index_service(request)
+    stack = getattr(request.app.state, "rag_stack", None)
+    if stack is None:
+        stack = getattr(getattr(request.app.state, "vault_lifecycle", None), "rag_stack", None)
+    graph_settings = _settings_from_app(request).graph
+    cache_key = (
+        id(index),
+        id(stack) if stack is not None else None,
+        graph_settings.model_dump_json(),
+        _settings_from_app(request).rag.model_dump_json(),
+    )
+    cached = getattr(request.app.state, "graph_service_cache", None)
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+    service = GraphService(
+        index,
+        settings=graph_settings,
+        vector_store=stack.store if stack is not None else None,
+        embedding_provider=stack.index.embedding_provider if stack is not None else None,
+        embedding_version=stack.index.embedding_version if stack is not None else "",
+    )
+    request.app.state.graph_service_cache = (cache_key, service)
+    return service
 
 
 def _build_policy_engine(settings: Settings) -> PolicyEngine:

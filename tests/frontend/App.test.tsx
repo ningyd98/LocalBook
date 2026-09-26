@@ -3,7 +3,7 @@ import { render } from "./render";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../apps/web/src/App";
-import { setVaultSession } from "../../apps/web/src/api/client";
+import { getVaultSession, setVaultSession } from "../../apps/web/src/api/client";
 import type { AIStatusResponse } from "../../apps/web/src/api/types";
 import { useWorkspaceStore } from "../../packages/workspace/src";
 
@@ -71,6 +71,26 @@ describe("LocalNote workbench status",()=>{
     await userEvent.click(screen.getByRole("button",{name:"Refresh status"}));
     expect(await screen.findByRole("button",{name:"Local service · Connected"})).toBeInTheDocument();
     await waitFor(()=>expect(useWorkspaceStore.getState().tree.status).toBe("ready"));
+  });
+  it("rebinds a restarted backend when the vault root is unchanged",async()=>{
+    let current={...settings};
+    const mock=vi.fn(async(input:RequestInfo|URL)=>{
+      const url=String(input);
+      if(url.endsWith("/health"))return ok({status:"ok"});
+      if(url.endsWith("/ai/status"))return ok(aiStatus());
+      if(url.endsWith("/settings/ai/profiles"))return ok({revision:current.revision,active_profile_id:"default",profiles:[]});
+      if(url.endsWith("/settings"))return ok(current);
+      if(url.includes("/vault/files"))return ok({entries:[]});
+      return failure(404,"not_found");
+    });
+    vi.stubGlobal("fetch",mock);render(<App/>);
+    await screen.findByRole("button",{name:"Vault：Connected"});
+    expect(getVaultSession()).toBe("workspace-a");
+    current={...settings,revision:2,vault_session_id:"workspace-b"};
+    window.dispatchEvent(new Event("localnote-vault-changed"));
+    await waitFor(()=>expect(getVaultSession()).toBe("workspace-b"));
+    expect(useWorkspaceStore.getState().vaultStale).toBe(false);
+    expect(useWorkspaceStore.getState().workspaceFrozen).toBe(false);
   });
 });
 

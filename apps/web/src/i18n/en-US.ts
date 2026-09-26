@@ -8,6 +8,7 @@ export const enUS = {
     files: "Files",
     search: "Search",
     graph: "Graph",
+    outline: "Outline",
     ai: "AI",
     history: "History",
     settings: "Settings",
@@ -73,6 +74,13 @@ export const enUS = {
     previewFailed: "Preview failed to load",
     noEditableNote: "Open an editable Markdown note first",
     loading: "Loading…",
+    insertRecording: "Insert recording",
+    transcribe: "Transcribe and insert into current note",
+    transcribing: "Transcribing…",
+    transcript: "Transcript",
+    transcriptionFailed: "Transcription failed; check the local transcription tool configuration.",
+    transcriptionUnavailable: "The local transcription tool is unavailable; install Whisper or configure a command.",
+    notAudio: "The selected file is not an audio recording.",
   },
 
   editor: {
@@ -91,6 +99,18 @@ export const enUS = {
     h5: "Heading 5",
     h6: "Heading 6",
     plain: "Body text (clear heading)",
+  },
+
+  // Inline formatting toolbar and right-click menu
+  format: {
+    toolbar: "Text format",
+    bold: "Bold (Ctrl+B)",
+    italic: "Italic (Ctrl+I)",
+    highlight: "Highlight (Ctrl+Shift+H)",
+    color: "Text colour",
+    clear: "Clear formatting",
+    table: "Insert table",
+    menu: "Format & insert",
   },
 
   // Conflict

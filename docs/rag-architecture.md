@@ -125,7 +125,7 @@ REST 响应（answer + sources + retrieval_stats + model）
 | `enabled` | `true` | 关闭后 RAG 不索引、不检索，其余功能不受影响 |
 | `embedding_provider` | `hash` | `hash` / `openai_compatible` / `openai` / `none` |
 | `embedding_base_url` / `embedding_model` / `embedding_api_key` | — | 与 Chat 模型**完全独立**的端点 |
-| `embedding_dimension` / `embedding_version` | `256` / `v1` | 维度不硬编码；任一变化即视为索引失效 |
+| `embedding_dimension` / `embedding_version` | `256` / `v1` | 维度不硬编码；任一变化即视为索引失效。配了真实端点时建议填 `0`＝自动探测模型维度（默认 `256` 只适用于本地 hash 回退） |
 | `chunk_target_tokens` / `chunk_max_tokens` / `chunk_overlap_tokens` | `800` / `1200` / `100` | 分块目标（token 估算，CJK≈1/字） |
 | `fts_top_k` / `vector_top_k` / `fusion_top_k` / `rerank_top_k` / `context_top_k` | `30`/`30`/`20`/`10`/`6` | 各阶段候选数 |
 | `rrf_k` | `60` | RRF 常数 |
@@ -147,6 +147,24 @@ REST 响应（answer + sources + retrieval_stats + model）
 `link_top_k` / `wikilink_weight` / `backlink_weight` / `tag_weight` / `graph_weight`；
 其中**仅前两个带 `link_` 前缀**），
 默认值与取值范围与代码逐字一致。
+
+### 5.0 配置的来源与持久化
+
+三个来源按顺序叠加，**设置面板写入的值优先**：
+
+1. `RagSettings` 的代码默认值；
+2. `LOCALNOTE_RAG__*` 环境变量（作为启动默认值，例如在 launchd plist 里固定重排端点）；
+3. 实例配置文件 `~/.config/localnote/instances/<host>-<port>/settings.json` 的 `rag` 段。
+
+`PATCH /api/v1/settings/rag` 会写回第 3 层，**重排端点与密钥、Embedding 端点、link
+开关等因此都能跨重启保留**；未改动过 RAG 的安装不会写出 `rag` 段（保持旧文件形状），
+损坏的 `rag` 段只降级为默认值并记一条 warning，不会阻塞启动。
+
+两个密钥字段（`embedding_api_key` / `reranker_api_key`）是**只写入不回显**的：快照里只
+有 `*_api_key_set` 布尔值，省略字段＝保持已存密钥，提交空串 `""`＝显式清除。首选的
+`embedding_dimension` 写法是 `0`，表示自动采用模型返回的维度；显式写死一个与模型
+不符的值会让整批向量作废（`embedding_dimension_mismatch`），索引里
+`embedded_chunks` 会停在 0、向量路静默退化成纯词法检索。
 
 ## 5.1 向量内核（可选加速）
 

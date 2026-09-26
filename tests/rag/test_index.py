@@ -83,6 +83,49 @@ def test_upsert_chunks_replaces_previous_chunks(store: SqliteVectorStore) -> Non
     assert store.chunk(first[1].chunk_id) is None
 
 
+def test_upsert_chunks_deletes_fts_rows_once_per_document(store: SqliteVectorStore) -> None:
+    if not store.fts_available:
+        pytest.skip("SQLite build without FTS5")
+    chunks = [_chunk("a.md", index, f"body {index}") for index in range(4)]
+    store.upsert_chunks(chunks, sha256="s1", content_hash="h1", prune_fts=False)
+    deleted_fts: list[str] = []
+    with store._db.locked_connection() as connection:
+        connection.set_trace_callback(
+            lambda statement: deleted_fts.append(statement)
+            if "DELETE FROM rag_chunks_fts" in statement
+            else None
+        )
+    try:
+        store.upsert_chunks(chunks, sha256="s2", content_hash="h2", prune_fts=False)
+    finally:
+        with store._db.locked_connection() as connection:
+            connection.set_trace_callback(None)
+
+    assert len(deleted_fts) == 1
+    assert store._scalar("SELECT COUNT(*) FROM rag_chunks_fts") == len(chunks)
+
+
+def test_semantic_graph_reads_one_packed_vector_run_per_note(store: SqliteVectorStore) -> None:
+    chunks = [_chunk("a.md", 0, "first"), _chunk("a.md", 1, "second")]
+    store.upsert_chunks(chunks, sha256="sha-a", content_hash="hash-a")
+    store.upsert_embeddings(
+        chunk_ids=[chunk.chunk_id for chunk in chunks],
+        vectors=[[1.0, 0.0], [0.0, 1.0]],
+        model="semantic-test",
+        embedding_version="v1",
+    )
+
+    rows = store.semantic_note_vectors(
+        ["a.md"], model="semantic-test", dimension=2, version="v1"
+    )
+    assert len(rows) == 1
+    assert rows[0]["path"] == "a.md"
+    assert len(rows[0]["vector"]) == 2 * 2 * 4
+    assert store.semantic_embeddings_compatible(
+        model="semantic-test", dimension=2, version="v1"
+    )
+
+
 def test_delete_document_removes_chunks_and_embeddings(
     store: SqliteVectorStore,
 ) -> None:
@@ -283,6 +326,8 @@ def test_rebuild_indexes_vault_and_embeds_every_chunk(rag_vault, store) -> None:
     assert result.indexed_documents == 2
     assert result.ready is True
     assert store.embedded_count() == store.chunk_count() > 0
+    if store.fts_available:
+        assert store._scalar("SELECT COUNT(*) FROM rag_chunks_fts") == store.chunk_count()
     assert service.status().status == "ready"
 
 

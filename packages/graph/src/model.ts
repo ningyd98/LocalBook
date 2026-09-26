@@ -68,6 +68,7 @@ function addEdge(graph: Graph<GraphNodeAttrs, GraphEdgeAttrs>, edge: GraphEdge):
     candidates: edge.candidates,
     section: edge.section,
     block: edge.block,
+    score: edge.score,
   });
 }
 
@@ -77,6 +78,20 @@ export function protocolNodes(response: GraphResponse): Map<string, GraphNode> {
   return byId;
 }
 
+/** A display-only projection that removes nodes with no drawable relation. */
+export function connectedGraph(response: GraphResponse): GraphResponse {
+  const present = new Set(response.nodes.map((node) => node.id));
+  const edges = response.edges.filter((edge) =>
+    edge.target !== "" && present.has(edge.source) && present.has(edge.target),
+  );
+  const connected = new Set(edges.flatMap((edge) => [edge.source, edge.target]));
+  return {
+    ...response,
+    nodes: response.nodes.filter((node) => connected.has(node.id)),
+    edges,
+  };
+}
+
 /** Counts shown in the legend / fallback / stats line (incl. dangling). */
 export function graphStats(response: GraphResponse): {
   nodes: number;
@@ -84,12 +99,15 @@ export function graphStats(response: GraphResponse): {
   broken: number;
   ambiguous: number;
   tags: number;
+  semantic: number;
 } {
   let broken = 0;
   let ambiguous = 0;
   let tags = 0;
+  let semantic = 0;
   for (const node of response.nodes) if (node.type === "tag") tags += 1;
   for (const edge of response.edges) {
+    if (edge.type === "semantic") semantic += 1;
     if (edge.type === "tag") continue;
     if (edge.broken) broken += 1;
     if (edge.ambiguous) ambiguous += 1;
@@ -100,5 +118,6 @@ export function graphStats(response: GraphResponse): {
     broken,
     ambiguous,
     tags,
+    semantic,
   };
 }

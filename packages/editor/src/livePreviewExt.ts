@@ -21,12 +21,16 @@ export type LivePreviewResolver = (path: string) => string | null;
 export interface LivePreviewOptions {
   /** Build a loadable URL for a Vault-relative image target. */
   resolveResourceUrl?: LivePreviewResolver;
+  /** Build a PDF preview URL for a Vault-relative Office/PDF target. */
+  resolveDocumentUrl?: LivePreviewResolver;
   /** Vault-relative path of the note being edited. */
   notePath?: string | null;
   /** Click on a rendered link/wikilink. */
   onOpenLink?: (target: string, kind: "link" | "wikilink") => void;
   /** Click on a task checkbox (index is the document-order ordinal). */
   onToggleTask?: (index: number) => void;
+  /** Start local transcription for a relative audio target. */
+  onTranscribeAudio?: (target: string) => void;
 }
 
 const hide = Decoration.replace({});
@@ -61,17 +65,57 @@ class ImageWidget extends WidgetType {
   ignoreEvent() { return false; }
 }
 
+function isAudioReference(value: string): boolean {
+  const path = (value.split("#", 1)[0] ?? value).split("?", 1)[0] ?? value;
+  return /\.(mp3|wav|m4a|aac|flac|ogg|oga|opus|webm|amr|caf|aiff?|wma)$/i.test(path);
+}
+
+function isDocumentReference(value: string): boolean {
+  const path = (value.split("#", 1)[0] ?? value).split("?", 1)[0] ?? value;
+  return /\.(pdf|doc|docx|docm|dotx|dotm|wps|wpt|ppt|pptx|pptm|pps|ppsx|potx|potm|dps|dpt|xls|xlsx|xlsm|et|ett|odt|ods|odp|ott|otp|ots|rtf|csv)$/i.test(path);
+}
+
+class AudioWidget extends WidgetType {
+  constructor(readonly src: string, readonly target: string, readonly onTranscribe?: (target: string) => void) { super(); }
+  eq(other: AudioWidget) { return other.src === this.src && other.target === this.target; }
+  toDOM() {
+    const figure = document.createElement("figure");
+    figure.className = "cm-lp-audio";
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    audio.preload = "metadata";
+    audio.src = this.src;
+    figure.appendChild(audio);
+    if (this.onTranscribe) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "cm-lp-audio-transcribe";
+      button.textContent = "转文字 / Transcribe";
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.onTranscribe?.(this.target);
+      });
+      figure.appendChild(button);
+    }
+    return figure;
+  }
+  ignoreEvent() { return false; }
+}
+
 /** True when the caret sits on the same line as `pos`. */
 /** Task markers in document order, ignoring fenced code blocks. */
 function scanTasks(text: string): { from: number; to: number; checked: boolean }[] {
   const found: { from: number; to: number; checked: boolean }[] = [];
   let offset = 0;
-  let fence: string | null = null;
+  let fence: { marker: string; length: number } | null = null;
   for (const line of text.split("\n")) {
     const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
     if (fenceMatch) {
-      const marker = fenceMatch[1]![0]!;
-      fence = fence && fence === marker ? null : fence === null ? marker : fence;
+      const run = fenceMatch[1]!;
+      const marker = run[0]!;
+      if (fence === null) fence = { marker, length: run.length };
+      else if (fence.marker === marker && run.length >= fence.length) fence = null;
       offset += line.length + 1;
       continue;
     }
@@ -85,6 +129,31 @@ function scanTasks(text: string): { from: number; to: number; checked: boolean }
     offset += line.length + 1;
   }
   return found;
+}
+
+class DocumentWidget extends WidgetType {
+  constructor(readonly src: string, readonly target: string, readonly downloadUrl: string) { super(); }
+  eq(other: DocumentWidget) {
+    return other.src === this.src && other.target === this.target && other.downloadUrl === this.downloadUrl;
+  }
+  toDOM() {
+    const figure = document.createElement("figure");
+    figure.className = "cm-lp-document";
+    const frame = document.createElement("iframe");
+    frame.src = this.src;
+    frame.title = this.target;
+    frame.loading = "lazy";
+    figure.appendChild(frame);
+    const link = document.createElement("a");
+    link.href = this.downloadUrl;
+    link.download = this.target.split("/").at(-1) ?? this.target;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "打开 / 下载原文件 · Open / download";
+    figure.appendChild(link);
+    return figure;
+  }
+  ignoreEvent() { return false; }
 }
 
 class TaskCheckboxWidget extends WidgetType {
@@ -126,17 +195,66 @@ function wikilinkTarget(text: string): string | null {
   return match ? match[1]!.split("|")[0]!.split("#")[0]!.trim() : null;
 }
 
+/** Syntax nodes whose text must never be interpreted as live-preview markup. */
+const CODE_NODES = new Set(["InlineCode", "FencedCode", "CodeBlock", "CodeText", "CodeInfo"]);
+
+/**
+ * `<span style="color:#rrggbb">text</span>` — the colour form the editor
+ * writes. Only a bare colour declaration is matched, mirroring the preview
+ * sanitizer's allow-list, so a hand-written tag with extra CSS is left alone.
+ * The body may carry `=`, inline markup and a soft line break (nested spans are
+ * not matched: their closing tag would be ambiguous, and the commands never
+ * nest them).
+ */
+const COLOR_SPAN_RE = /<span\s+style="color:\s*(#[0-9a-fA-F]{3,8})"\s*>((?:(?!<\/?span)[\s\S])*?)<\/span>/g;
+const CLOSE_TAG = "</span>";
+
+/** True when `at` sits between a `<` and its closing `>`: attribute text, not markup. */
+function insideTag(text: string, at: number): boolean {
+  return text.lastIndexOf("<", at) > text.lastIndexOf(">", at);
+}
+
+/**
+ * `==highlight==` delimiter *pairs* in document order.
+ *
+ * Pairing the delimiters (instead of matching a `[^=]+` body line by line) lets
+ * a highlighted run contain `=` and complete inline markup — which is what
+ * stacking formats produces: highlighting a coloured run writes
+ * `==<span style="color:#e5484d">x</span>==`, whose tag carries `=`.
+ */
+function scanHighlightPairs(text: string, skip: (from: number, to: number) => boolean): Array<{ open: number; close: number }> {
+  const pairs: Array<{ open: number; close: number }> = [];
+  const pattern = /==/g;
+  let pending = -1;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text))) {
+    const at = match.index;
+    if (skip(at, at + 2) || insideTag(text, at)) continue;
+    if (pending < 0) { pending = at; continue; }
+    // `====` stays an empty pair: the opener shifts to the later `==`.
+    if (at === pending + 2) { pending = at; continue; }
+    pairs.push({ open: pending, close: at });
+    pending = -1;
+  }
+  return pairs;
+}
+
 export function buildDecorations(state: EditorState, options: LivePreviewOptions): DecorationSet {
   const pending: Range<Decoration>[] = [];
   const push = (from: number, to: number, decoration: Decoration) => {
     if (to > from) pending.push(decoration.range(from, to));
   };
+  /** Spans the inline scanners must skip (inline code, fenced code). */
+  const codeRanges: { from: number; to: number }[] = [];
+  const inCode = (from: number, to: number) => codeRanges.some((range) => from < range.to && to > range.from);
 
   syntaxTree(state).iterate({
     enter: (node) => {
       const { name, from, to } = node;
       // The caret's line stays raw so the syntax can be edited in place.
       const active = lineIsActive(state, from);
+
+      if (CODE_NODES.has(name)) codeRanges.push({ from, to });
 
       const heading = HEADING_CLASS[name];
       if (heading) {
@@ -178,7 +296,20 @@ export function buildDecorations(state: EditorState, options: LivePreviewOptions
         if (!parts) return;
         const resolved = options.resolveResourceUrl?.(parts.src) ?? null;
         if (!resolved) return;
-        push(from, to, Decoration.replace({ widget: new ImageWidget(resolved, parts.alt) }));
+        let documentUrl: string | null = null;
+        if (isDocumentReference(parts.src) && options.resolveDocumentUrl) {
+          try {
+            documentUrl = options.resolveDocumentUrl(parts.src);
+          } catch {
+            documentUrl = null;
+          }
+        }
+        const widget = isAudioReference(parts.src)
+          ? new AudioWidget(resolved, parts.src, options.onTranscribeAudio)
+          : documentUrl
+            ? new DocumentWidget(documentUrl, parts.src, resolved)
+            : new ImageWidget(resolved, parts.alt);
+        push(from, to, Decoration.replace({ widget }));
         return;
       }
 
@@ -193,6 +324,21 @@ export function buildDecorations(state: EditorState, options: LivePreviewOptions
           return;
         }
         const href = /\]\(([^)\s]+)/.exec(raw)?.[1];
+        if (!active && href && isAudioReference(href)) {
+          const resolved = options.resolveResourceUrl?.(href) ?? null;
+          if (resolved) {
+            push(from, to, Decoration.replace({ widget: new AudioWidget(resolved, href, options.onTranscribeAudio) }));
+            return;
+          }
+        }
+        if (!active && href && isDocumentReference(href)) {
+          const resolved = options.resolveResourceUrl?.(href) ?? null;
+          const preview = options.resolveDocumentUrl?.(href) ?? null;
+          if (resolved && preview) {
+            push(from, to, Decoration.replace({ widget: new DocumentWidget(preview, href, resolved) }));
+            return;
+          }
+        }
         push(from, to, Decoration.mark({
           class: "cm-lp-link",
           attributes: href ? { "data-href": href, role: "link", tabindex: "0" } : {},
@@ -217,6 +363,31 @@ export function buildDecorations(state: EditorState, options: LivePreviewOptions
   for (const [index, task] of scanTasks(state.doc.toString()).entries()) {
     if (lineIsActive(state, task.from)) continue;
     push(task.from, task.to, Decoration.replace({ widget: new TaskCheckboxWidget(index, task.checked) }));
+  }
+
+  // Highlight and colour are not part of the Markdown grammar, so they are
+  // scanned over the whole document: a pair may contain `=` and complete inline
+  // markup (stacked formats), and a colour span may wrap a soft line break. A
+  // construct the caret or selection touches stays raw so it remains editable.
+  const text = state.doc.toString();
+  for (const pair of scanHighlightPairs(text, inCode)) {
+    if (lineIsActive(state, pair.open) || lineIsActive(state, pair.close)) continue;
+    push(pair.open, pair.open + 2, hide);
+    push(pair.close, pair.close + 2, hide);
+    push(pair.open + 2, pair.close, Decoration.mark({ class: "cm-lp-highlight" }));
+  }
+
+  COLOR_SPAN_RE.lastIndex = 0;
+  let colored: RegExpExecArray | null;
+  while ((colored = COLOR_SPAN_RE.exec(text))) {
+    const start = colored.index;
+    const openEnd = start + colored[0].indexOf(">") + 1;
+    const closeStart = start + colored[0].length - CLOSE_TAG.length;
+    if (inCode(start, openEnd) || inCode(closeStart, closeStart + CLOSE_TAG.length)) continue;
+    if (lineIsActive(state, start) || lineIsActive(state, closeStart)) continue;
+    push(start, openEnd, hide);
+    push(closeStart, closeStart + CLOSE_TAG.length, hide);
+    push(openEnd, closeStart, Decoration.mark({ attributes: { style: `color:${colored[1]!.toLowerCase()}` } }));
   }
 
   // ``Decoration.set(..., true)`` sorts by the canonical range key, which
@@ -280,6 +451,7 @@ export function livePreview(options: () => LivePreviewOptions): Extension {
       ".cm-lp-em": { fontStyle: "italic" },
       ".cm-lp-strike": { textDecoration: "line-through", opacity: ".75" },
       ".cm-lp-code": { background: "var(--code)", borderRadius: "4px", padding: "1px 4px", fontSize: ".92em" },
+      ".cm-lp-highlight": { background: "var(--highlight, #f2d675)", color: "var(--highlight-fg, inherit)", borderRadius: "3px", padding: "1px 2px" },
       ".cm-lp-link": { color: "var(--accent)", cursor: "pointer" },
       ".cm-lp-wikilink": { borderBottom: "1px dashed currentColor" },
       ".cm-lp-listmark": { color: "var(--accent)", fontWeight: "600" },
@@ -291,6 +463,9 @@ export function livePreview(options: () => LivePreviewOptions): Extension {
       ".cm-lp-image": { margin: "6px 0", display: "flex", flexDirection: "column", gap: "4px" },
       ".cm-lp-image img": { maxWidth: "100%", borderRadius: "7px", border: "1px solid var(--border)" },
       ".cm-lp-image figcaption": { fontSize: "11px", color: "var(--subtle)" },
+      ".cm-lp-audio": { margin: "6px 0", display: "flex", flexDirection: "column", gap: "6px" },
+      ".cm-lp-audio audio": { maxWidth: "100%" },
+      ".cm-lp-audio-transcribe": { alignSelf: "flex-start", cursor: "pointer" },
     }),
     clickHandler(options()),
     EditorView.decorations.compute(["doc", "selection"], (state) => buildDecorations(state, options())),

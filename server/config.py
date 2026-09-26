@@ -96,7 +96,7 @@ class VaultSettings(BaseModel):
     root: Path | None = None
     watcher_enabled: bool = True
     watcher_debounce_ms: int = Field(default=200, ge=0)
-    max_file_bytes: int = Field(default=50 * 1024 * 1024, gt=0)
+    max_file_bytes: int = Field(default=200 * 1024 * 1024, gt=0)
     # How long a soft-deleted file or folder stays in ``.localnote/trash``
     # before the next trash operation removes it for good.
     trash_retention_days: int = Field(default=30, ge=1, le=3650)
@@ -845,6 +845,108 @@ class RecoverySettings(BaseModel):
     confirmation_ttl_seconds: int = Field(default=3600, ge=60, le=86_400)
 
 
+class ExportSettings(BaseModel):
+    """Note export caps (``LOCALNOTE_EXPORT__*``).
+
+    Export never fails because of size: an attachment bigger than
+    ``max_attachment_bytes``, or one that would push the export past
+    ``max_total_bytes``, is reported in ``warnings`` and keeps its original
+    reference in the exported Markdown.
+    """
+
+    max_attachment_bytes: int = Field(default=10 * 1024 * 1024, ge=0, le=512 * 1024 * 1024)
+    max_total_bytes: int = Field(default=32 * 1024 * 1024, ge=0, le=1024 * 1024 * 1024)
+
+
+class TranscriptionSettings(BaseModel):
+    """Local speech-to-text command settings.
+
+    The command is configured by the local operator, never by a browser
+    request.  It is parsed with ``shlex`` and executed without a shell.  The
+    default matches the OpenAI Whisper CLI installed by Homebrew/pip; users of
+    another local engine can provide an equivalent argv template using
+    ``{input}``, ``{output_dir}``, ``{output}``, ``{model}``, and optionally
+    ``{language}`` placeholders.
+    """
+
+    enabled: bool = True
+    command_template: str = (
+        "whisper --model {model} --output_dir {output_dir} "
+        "--output_format txt {input}"
+    )
+    model: str = Field(default="turbo", min_length=1, max_length=128)
+    # The default Whisper CLI cache under ``~/.cache`` may be unavailable to a
+    # sandboxed server, so the adapter can keep downloaded models in the Vault's
+    # private ``.localnote`` directory when this is unset.
+    model_dir: Path | None = None
+    language: str | None = Field(default=None, max_length=32)
+    timeout_seconds: int = Field(default=900, ge=1, le=7200)
+    max_output_chars: int = Field(default=500_000, ge=1_000, le=5_000_000)
+
+    @field_validator("command_template", "model", mode="before")
+    @classmethod
+    def _trim_command_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("command_template")
+    @classmethod
+    def _command_not_blank(cls, value: str) -> str:
+        if not value:
+            raise ValueError("command_template must not be blank")
+        return value
+
+    @field_validator("language", mode="before")
+    @classmethod
+    def _blank_language_is_none(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    @field_validator("language")
+    @classmethod
+    def _language_is_safe_arg(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,31}", value):
+            raise ValueError("language must be a simple locale name")
+        return value
+
+
+class DocumentPreviewSettings(BaseModel):
+    """Local Office/PDF preview conversion settings."""
+
+    enabled: bool = True
+    command: str = Field(default="dsh-doc", min_length=1, max_length=512)
+    timeout_seconds: int = Field(default=120, ge=1, le=1800)
+    max_output_bytes: int = Field(
+        default=100 * 1024 * 1024,
+        ge=1 * 1024 * 1024,
+        le=512 * 1024 * 1024,
+    )
+
+    @field_validator("command", mode="before")
+    @classmethod
+    def _trim_command(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
+class WebSearchSettings(BaseModel):
+    """Optional SearXNG JSON search for Reader's web scope.
+
+    The endpoint is operator-configured; no third-party search host or key is
+    assumed for installations that have not opted in.
+    """
+
+    base_url: str | None = None
+    timeout_seconds: float = Field(default=8.0, ge=1.0, le=30.0)
+    max_response_bytes: int = Field(default=512_000, ge=16_384, le=2_000_000)
+
+    @field_validator("base_url", mode="before")
+    @classmethod
+    def _blank_base_url_is_none(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix=ENV_PREFIX,
@@ -855,6 +957,7 @@ class Settings(BaseSettings):
     server: ServerSettings = ServerSettings()
     vault: VaultSettings = VaultSettings()
     ai: AISettings = AISettings()
+    web_search: WebSearchSettings = WebSearchSettings()
     scheduler: SchedulerSettings = SchedulerSettings()
     index: IndexSettings = IndexSettings()
     rag: RagSettings = RagSettings()
@@ -862,6 +965,9 @@ class Settings(BaseSettings):
     policy: PolicySettings = PolicySettings()
     history: HistorySettings = HistorySettings()
     recovery: RecoverySettings = RecoverySettings()
+    export: ExportSettings = ExportSettings()
+    transcription: TranscriptionSettings = TranscriptionSettings()
+    document_preview: DocumentPreviewSettings = DocumentPreviewSettings()
 
     @model_validator(mode="before")
     @classmethod

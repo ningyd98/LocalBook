@@ -28,6 +28,13 @@ build/
 
 # Derived / user data — never commit
 .localnote/
+.localnote.toml
+test-vault/
+
+# Generated verification workspaces
+verification_vfy*/
+vfy-*/
+vfy_*/
 
 # Editors / OS
 .DS_Store
@@ -46,3 +53,17 @@ build/
 /review/
 /integration/
 /verification/
+/docs/e2e-test-report.md
+/tests/performance/
+/tests/integration/manual_e2e_test.py
+/tests/integration/standalone_e2e_test.py
+
+# Temporary backups are not release sources
+*.bak
+
+# ReadFlow internal QA archives
+/ReadFlow/docs/standalone-requirements.md
+/ReadFlow/docs/standalone-verification.md
+/ReadFlow/docs/standalone-delivery.md
+/ReadFlow/docs/standalone-build.md
+/ReadFlow/Tests/

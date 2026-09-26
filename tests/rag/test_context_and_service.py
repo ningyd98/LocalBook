@@ -26,7 +26,11 @@ from server.rag.retrieval.hybrid import HybridRetriever
 from server.rag.retrieval.keyword import KeywordRetriever
 from server.rag.retrieval.vector import VectorRetriever
 from server.rag.schemas import EvidencePack, RetrievalResult, SourceEvidence
-from server.rag.service import RagService, load_answer_prompt
+from server.rag.service import (
+    RagService,
+    _response_language_instruction,
+    load_answer_prompt,
+)
 from tests.rag.conftest import make_index_service, write_note
 
 
@@ -349,6 +353,28 @@ def test_prompt_is_a_loadable_markdown_prompt() -> None:
     assert "ONLY the numbered evidence blocks" in prompt
     assert "[S1]" in prompt
     assert "没有找到足够证据" in prompt
+    assert "predominantly Chinese" in prompt
+    assert "Do not translate a Chinese note into an English summary" in prompt
+
+
+def test_response_language_hint_prefers_chinese_evidence_over_english_query() -> None:
+    pack = EvidencePack(
+        query="What is the project status?",
+        sources=[
+            SourceEvidence(
+                source_id="S1",
+                path="项目记录.md",
+                start_line=1,
+                end_line=4,
+                content="项目当前进展顺利，下一步完成测试并准备发布。",
+            )
+        ],
+    )
+
+    hint = _response_language_instruction("What is the project status?", pack)
+
+    assert hint.startswith("Simplified Chinese")
+    assert "do not translate" in hint
 
 
 def test_service_query_grounds_the_answer(rag_vault, store) -> None:
@@ -361,6 +387,7 @@ def test_service_query_grounds_the_answer(rag_vault, store) -> None:
 
     async def generate(system, user):
         assert "[S1]" in user  # the model sees the numbered evidence only
+        assert "Output language requirement: Simplified Chinese" in user
         return json.dumps(
             {"answer": "你的笔记采用了重规划机制 [S1]。", "used_sources": ["S1"]}
         ), "qwen-test"
@@ -372,7 +399,7 @@ def test_service_query_grounds_the_answer(rag_vault, store) -> None:
     assert response.sources[0].start_line >= 1
     assert "[S1]" in response.answer
     assert response.model == "qwen-test"
-    assert response.prompt_version.startswith("rag_answer@")
+    assert response.prompt_version == "rag_answer@m14.2"
     assert response.retrieval_stats.context_chunks >= 1
 
 

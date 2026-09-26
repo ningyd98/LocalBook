@@ -58,7 +58,11 @@ def _response() -> GraphResponse:
             )
         ],
         page=GraphPage(
-            limit=500, offset=0, next_offset=None, total_nodes=2, total_edges=1,
+            limit=500,
+            offset=0,
+            next_offset=None,
+            total_nodes=2,
+            total_edges=1,
             truncated=False,
         ),
         generated_at=datetime.now(UTC),
@@ -70,15 +74,42 @@ def test_response_shape_and_literals() -> None:
     assert payload["model"] == "note-tag-v1"
     assert payload["scope"] == "global"
     assert payload["root"] is None
-    assert set(payload) == {"model", "scope", "root", "nodes", "edges", "page", "generated_at"}
+    assert set(payload) == {
+        "model",
+        "scope",
+        "root",
+        "nodes",
+        "edges",
+        "page",
+        "generated_at",
+        "semantic_status",
+        "semantic_covered_nodes",
+    }
     assert set(payload["nodes"][0]) == {"id", "type", "label", "path", "title", "tag", "tag_folded"}
     assert set(payload["nodes"][1]) == {"id", "type", "label", "path", "title", "tag", "tag_folded"}
     assert set(payload["edges"][0]) == {
-        "id", "source", "target", "type", "directed", "raw", "resolved_path",
-        "section", "block", "broken", "ambiguous", "candidates", "context",
+        "id",
+        "source",
+        "target",
+        "type",
+        "score",
+        "directed",
+        "raw",
+        "resolved_path",
+        "section",
+        "block",
+        "broken",
+        "ambiguous",
+        "candidates",
+        "context",
     }
     assert set(payload["page"]) == {
-        "limit", "offset", "next_offset", "total_nodes", "total_edges", "truncated",
+        "limit",
+        "offset",
+        "next_offset",
+        "total_nodes",
+        "total_edges",
+        "truncated",
     }
     assert payload["generated_at"]  # ISO-8601 string under mode="json"
 
@@ -87,9 +118,7 @@ def test_extra_fields_are_forbidden() -> None:
     with pytest.raises(ValidationError):
         GraphNode(id="x", type="note", label="x", extra="nope")  # type: ignore[call-arg]
     with pytest.raises(ValidationError):
-        GraphResponse.model_validate(
-            _response().model_dump() | {"extra": 1}
-        )
+        GraphResponse.model_validate(_response().model_dump() | {"extra": 1})
     with pytest.raises(ValidationError):
         GraphNode(id="x", type="heading", label="x")  # type: ignore[arg-type]
 

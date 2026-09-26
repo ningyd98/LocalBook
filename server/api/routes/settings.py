@@ -21,12 +21,10 @@ from ...runtime import Runtime, SettingsError, validate_endpoint
 def _is_loopback_peer(request: Request) -> bool:
     """True when the effective client is loopback (or an in-process ASGI client).
 
-    Behind the configured reverse-proxy chain (nginx -> frp -> Vite) the TCP
-    peer is the *public* client address while the last hop is loopback; the
-    trusted host allow-list is what opts into that chain, so the right-most
-    ``X-Forwarded-For`` hop is honoured here as the effective peer. TestClient's
-    synthetic peer ``testclient`` is accepted only for in-process ASGI requests
-    (``scope["app"]`` is never set on a real TCP connection).
+    Forwarding headers are caller-controlled unless a separately configured
+    trusted-proxy chain validates them. This application has no such chain, so
+    trust only the socket peer. A local reverse proxy remains supported when it
+    connects to the app over loopback.
     """
     peer = request.client.host if request.client else ""
     try:
@@ -35,12 +33,6 @@ def _is_loopback_peer(request: Request) -> bool:
     except ValueError:
         if peer == "testclient" and "app" in request.scope:
             return True
-    hops = [hop.strip() for hop in request.headers.get("x-forwarded-for", "").split(",")]
-    for hop in reversed([h for h in hops if h]):
-        try:
-            return ipaddress.ip_address(hop).is_loopback
-        except ValueError:
-            continue
     return False
 
 
@@ -177,8 +169,8 @@ class RagConfiguration(BaseModel):
     """RAG settings accepted by ``PATCH /settings/rag`` (M14).
 
     Every field is optional so the UI can submit a partial edit; ``None`` keeps
-    the stored value, and ``embedding_api_key=""`` clears the stored secret
-    (mirroring the AI key contract).
+    the stored value, and ``embedding_api_key=""`` / ``reranker_api_key=""``
+    clears the stored secret (mirroring the AI key contract).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -202,6 +194,13 @@ class RagConfiguration(BaseModel):
     # keys, and a whitelisting client would omit it).
     reranker_base_url: str | None = None
     reranker_model: str | None = None
+    # Same write-only secret contract as ``embedding_api_key``: the reranker is
+    # an independent endpoint (a local vLLM/omlx/Cohere-style server), so it
+    # usually needs its own key. Without this field the adapter, the factory and
+    # the probe all read an empty ``reranker_api_key`` forever, and a local
+    # endpoint that enforces auth answers 401 ("rejected the API key") with no
+    # way to fix it from the UI. ``None`` keeps the stored key, "" clears it.
+    reranker_api_key: str | None = None
     index_on_startup: bool | None = None
     # Link/graph expansion (roadmap item ③). Same partial-update contract as
     # every other field: ``None`` keeps the stored value; the bounds mirror
@@ -225,6 +224,10 @@ class VaultSwitch(Strict):
     vault_session_id: str = Field(min_length=1, max_length=100)
 
 
+class PairingApproval(Strict):
+    pairing_token: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
 def _ai_probe_settings(body: AIConfiguration, request: Request):
     """Effective AI settings for a probe: submitted values + stored secrets.
 
@@ -240,6 +243,14 @@ def _ai_probe_settings(body: AIConfiguration, request: Request):
 @router.get("")
 def get_settings(request: Request):
     return request.app.state.runtime.snapshot()
+
+
+@router.post("/reader/pairing/approve")
+def approve_reader_pairing(body: PairingApproval, request: Request):
+    """Approve a pending Reader device pairing from the trusted local UI."""
+    from ...reader.router import get_reader_service
+
+    return get_reader_service(request).approve_pairing_token(body.pairing_token)
 
 
 @router.patch("")

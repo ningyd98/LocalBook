@@ -33,7 +33,7 @@ function resetStore(path: string | null = "notes/a.md") {
     tabs: [], activePath: path, sessions: {},
     relations: { status: "idle", path: null, outgoing: null, backlinks: null, brokenCount: 0, error: null },
     search: { status: "idle", query: "", response: null, error: null },
-    graph: { status: "idle", scope: "global", note: null, depth: 1, direction: "both", tag: null, includeBroken: true, limit: 500, offset: 0, response: null, error: null, requestVersion: 0 },
+    graph: { status: "idle", scope: "global", note: null, depth: 1, direction: "both", tag: null, includeBroken: true, includeSemantic: true, limit: 500, offset: 0, response: null, error: null, requestVersion: 0 },
     ai: { status: "idle", action: null, notePath: null, response: null, error: null, requestVersion: 0 },
     theme: "light", splitRatio: 50,
   });

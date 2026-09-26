@@ -87,7 +87,14 @@ class VectorStore(Protocol):
 
     def delete_document(self, path: str) -> None: ...
 
-    def upsert_chunks(self, chunks: Sequence[RAGChunk]) -> None: ...
+    def upsert_chunks(
+        self,
+        chunks: Sequence[RAGChunk],
+        *,
+        sha256: str | None = None,
+        content_hash: str | None = None,
+        prune_fts: bool = True,
+    ) -> None: ...
 
     def upsert_embeddings(
         self,

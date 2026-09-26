@@ -11,6 +11,7 @@ import shutil
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import patch
 
 from server.index.service import DerivedIndexService
 from server.vault.events import VaultEvent
@@ -53,6 +54,88 @@ def test_rebuild_indexes_all_markdown_and_counts_failures(
     assert bad.frontmatter_status == "unreadable"
     assert bad.diagnostic == "File is not valid UTF-8"
     assert bad.outgoing == []
+
+
+def test_full_rebuild_recreates_fts_without_rowwise_delete(
+    vault_fixture_copy: Path,
+    vault_service_factory: Callable[..., VaultService],
+    index_service_factory: Callable[..., DerivedIndexService],
+) -> None:
+    index = index_service_factory(vault_service_factory(vault_fixture_copy))
+    if not index.database or not index.database.fts_available:
+        return
+    statements: list[str] = []
+    with index.database.locked_connection() as connection:
+        connection.set_trace_callback(
+            lambda statement: statements.append(statement)
+            if "notes_fts" in statement and (
+                statement.startswith("DELETE FROM") or statement.startswith("DROP TABLE")
+            )
+            else None
+        )
+    try:
+        index.rebuild()
+    finally:
+        with index.database.locked_connection() as connection:
+            connection.set_trace_callback(None)
+
+    assert any(statement.startswith("DROP TABLE") for statement in statements)
+    assert not any(statement.startswith("DELETE FROM notes_fts") for statement in statements)
+    with index.database.locked_connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM notes_fts").fetchone()[0] == index.note_count()
+
+
+def test_startup_refresh_reuses_fingerprint_matched_index(
+    vault_fixture_copy: Path,
+    vault_service_factory: Callable[..., VaultService],
+    index_service_factory: Callable[..., DerivedIndexService],
+) -> None:
+    vault = vault_service_factory(vault_fixture_copy)
+    previous = index_service_factory(vault)
+    fresh = DerivedIndexService(vault)
+    assert fresh._open_database()
+    assert fresh.database is not None
+    statements: list[str] = []
+    with fresh.database.locked_connection() as connection:
+        connection.set_trace_callback(
+            lambda statement: statements.append(statement)
+            if "FROM notes" in statement
+            else None
+        )
+
+    try:
+        with patch.object(fresh, "rebuild", side_effect=AssertionError("unneeded full rebuild")):
+            result = fresh.refresh()
+    finally:
+        with fresh.database.locked_connection() as connection:
+            connection.set_trace_callback(None)
+
+    assert result.ready is True
+    assert fresh.note_count() == previous.note_count()
+    assert fresh.failed_count == previous.failed_count
+    assert not any("diagnostic" in statement for statement in statements)
+    assert fresh.entry("中文 note.md") is not None
+
+
+def test_startup_refresh_rebuilds_after_vault_content_changes(
+    vault_service_factory: Callable[..., VaultService],
+    index_service_factory: Callable[..., DerivedIndexService],
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "vault"
+    root.mkdir()
+    vault = vault_service_factory(root)
+    vault.create_bytes("a.md", b"# Old\n")
+    index_service_factory(vault)
+    data, digest = vault.read_bytes("a.md")
+    assert data == b"# Old\n"
+    vault.write_bytes("a.md", b"# New\n", digest)
+
+    fresh = DerivedIndexService(vault)
+    result = fresh.refresh()
+
+    assert result.ready is True
+    assert fresh.entry("a.md").title == "New"
 
 
 def test_rebuild_resolution_broken_and_ambiguous(

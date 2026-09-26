@@ -124,6 +124,10 @@ class RagIndexService:
         return int(self._provider.dimension) if self._provider is not None else 0
 
     @property
+    def embedding_version(self) -> str:
+        return self._embedding_version
+
+    @property
     def embedding_is_degraded(self) -> bool:
         return bool(getattr(self._provider, "is_degraded", False))
 
@@ -205,8 +209,11 @@ class RagIndexService:
             if progress is not None:
                 progress(0, total)
             failures = 0
+            # Store all chunks first, then embed in cross-document batches. This
+            # avoids one network/provider call per note during a full rebuild and
+            # lets the configured batch size work across document boundaries.
             for position, path in enumerate(paths, start=1):
-                outcome = self._reindex_document(path, embed=True)
+                outcome = self._reindex_document(path, embed=False, prune_fts=False)
                 if outcome == "indexed":
                     result.indexed_documents += 1
                 elif outcome == "failed":
@@ -259,7 +266,7 @@ class RagIndexService:
     # Per-document work
     # ------------------------------------------------------------------
 
-    def _reindex_document(self, path: str, *, embed: bool) -> str:
+    def _reindex_document(self, path: str, *, embed: bool, prune_fts: bool = True) -> str:
         """Index one document; returns ``indexed``/``skipped``/``failed``."""
         try:
             data, digest = self._vault.read_bytes(path)
@@ -284,7 +291,10 @@ class RagIndexService:
 
         document_hash = content_hash(text)
         self._store.upsert_chunks(
-            chunks, sha256=digest, content_hash=document_hash
+            chunks,
+            sha256=digest,
+            content_hash=document_hash,
+            prune_fts=prune_fts,
         )
         if embed:
             self._embed_chunks(chunks)
@@ -316,11 +326,7 @@ class RagIndexService:
                 embedding_version=self._embedding_version,
             )
         )
-        pending = [
-            chunk
-            for chunk in wanted
-            if existing.get(chunk.chunk_id) != chunk.content_hash
-        ]
+        pending = [chunk for chunk in wanted if existing.get(chunk.chunk_id) != chunk.content_hash]
         if not pending:
             return 0
 
@@ -331,9 +337,7 @@ class RagIndexService:
             try:
                 vectors = runner.embed_documents(texts)
             except EmbeddingError as exc:
-                logger.warning(
-                    "rag embedding failed for %d chunks: %s", len(window), exc.code
-                )
+                logger.warning("rag embedding failed for %d chunks: %s", len(window), exc.code)
                 self._store.mark_documents_pending(
                     sorted({chunk.document_id for chunk in window}), exc.code
                 )
@@ -492,9 +496,7 @@ class RagIndexService:
                 embedding_version=self._embedding_version,
             )
             pending = [
-                chunk
-                for chunk in stored
-                if existing.get(chunk.chunk_id) != chunk.content_hash
+                chunk for chunk in stored if existing.get(chunk.chunk_id) != chunk.content_hash
             ]
             if not pending:
                 return "skipped"

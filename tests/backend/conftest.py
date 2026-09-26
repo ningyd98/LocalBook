@@ -125,7 +125,7 @@ def vault_service_factory() -> Callable[..., VaultService]:
     def _factory(
         root: str | os.PathLike[str],
         *,
-        max_file_bytes: int = 50 * 1024 * 1024,
+        max_file_bytes: int = 200 * 1024 * 1024,
         watcher_enabled: bool = False,
         watcher_debounce_ms: int = 200,
         initialize: bool = True,

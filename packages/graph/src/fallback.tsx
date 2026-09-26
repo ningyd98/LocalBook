@@ -23,6 +23,10 @@ export function GraphFallback({
   const stats = graphStats(response);
   const notes = response.nodes.filter((node) => node.type === "note");
   const tags = response.nodes.filter((node) => node.type === "tag" && node.tag_folded);
+  const nodesById = new Map(response.nodes.map((node) => [node.id, node]));
+  const relations = response.edges.filter((edge) =>
+    edge.target && nodesById.has(edge.source) && nodesById.has(edge.target),
+  );
   return (
     <div className="graph-fallback" role="region" aria-label={tr("图谱列表视图","Graph fallback view")}>
       {reason && <p className="graph-fallback-reason">{tr("当前浏览器无法显示交互图谱，已切换为可点击的列表视图。",reason)}</p>}
@@ -79,6 +83,24 @@ export function GraphFallback({
               ))}
             </ul>
           )}
+        </section>
+        <section aria-label={tr("关联列表", "Relations")}>
+          <h4>{tr("关联", "Relations")} ({relations.length})</h4>
+          <ul className="graph-fallback-list" aria-label={tr("图谱关联", "Graph relations")}>
+            {relations.slice(0, 100).map((edge) => (
+              <li key={edge.id}>
+                {nodesById.get(edge.source)?.label} {edge.directed ? "→" : "—"} {nodesById.get(edge.target)?.label}
+                <small className="graph-relation-kind">
+                  {edge.type === "semantic"
+                    ? ` · ${tr("内容相近候选", "Content similarity")}${edge.score != null ? ` ${Math.round(edge.score * 100)}%` : ""}`
+                    : edge.type === "tag"
+                      ? ` · ${tr("标签", "Tag")}`
+                      : ` · ${tr("笔记链接", "Note link")}`}
+                </small>
+              </li>
+            ))}
+          </ul>
+          {relations.length > 100 && <p className="graph-fallback-hint">{tr(`仅列出前 100 条，共 ${relations.length} 条。`, `Showing 100 of ${relations.length} relations.`)}</p>}
         </section>
       </div>
     </div>

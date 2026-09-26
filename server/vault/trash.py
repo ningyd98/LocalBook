@@ -63,6 +63,10 @@ DEFAULT_RETENTION_DAYS = 30
 # attachment dedup rule.
 _RESTORED_SUFFIX = " (restored)"
 _MAX_DEDUP_ATTEMPTS = 500
+# Bound synchronous retention work on request paths; callers can invoke purge
+# repeatedly (or from a maintenance task) to drain additional batches.
+_DEFAULT_PURGE_BATCH_SIZE = 16
+_PURGE_DIR_PREFIX = ".purge-"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,29 +98,52 @@ class TrashItem:
 
     @classmethod
     def from_dict(cls, raw: object) -> TrashItem | None:
-        if not isinstance(raw, dict):
+        required = {
+            "id",
+            "original_path",
+            "kind",
+            "byte_length",
+            "file_count",
+            "deleted_at",
+            "blob",
+        }
+        if not isinstance(raw, dict) or set(raw) != required:
+            return None
+        if not isinstance(raw.get("deleted_at"), str):
             return None
         try:
-            deleted_at = datetime.fromisoformat(str(raw["deleted_at"]))
-        except (KeyError, ValueError):
+            deleted_at = datetime.fromisoformat(raw["deleted_at"])
+        except ValueError:
             return None
         if deleted_at.tzinfo is None:
             deleted_at = deleted_at.replace(tzinfo=UTC)
-        identifier = str(raw.get("id", ""))
-        original = str(raw.get("original_path", ""))
-        blob = str(raw.get("blob", ""))
-        kind = str(raw.get("kind", "file"))
-        if not identifier or not original or not blob or kind not in {"file", "directory"}:
+        identifier = raw.get("id")
+        original = raw.get("original_path")
+        blob = raw.get("blob")
+        kind = raw.get("kind")
+        byte_length = raw.get("byte_length")
+        file_count = raw.get("file_count")
+        if not all(isinstance(value, str) for value in (identifier, original, blob, kind)):
             return None
-        # A hand-edited index must not be able to point at an arbitrary location.
-        if blob.startswith("/") or ".." in blob.split("/") or original.startswith("/"):
+        if not isinstance(byte_length, int) or isinstance(byte_length, bool) or byte_length < 0:
+            return None
+        if not isinstance(file_count, int) or isinstance(file_count, bool) or file_count < 0:
+            return None
+        if kind not in {"file", "directory"} or validate_trash_id(identifier) != identifier:
+            return None
+        try:
+            original = validate_relative_path(original)
+            blob = validate_relative_path(blob)
+        except Exception:
+            return None
+        if blob.split("/", 1)[0] != identifier or len(blob.split("/")) < 2:
             return None
         return cls(
             id=identifier,
             original_path=original,
             kind=kind,
-            byte_length=int(raw.get("byte_length") or 0),
-            file_count=int(raw.get("file_count") or 0),
+            byte_length=byte_length,
+            file_count=file_count,
             deleted_at=deleted_at,
             blob=blob,
         )
@@ -134,7 +161,9 @@ class TrashView:
 class TrashService:
     """Soft delete, restore and retention for one Vault."""
 
-    def __init__(self, vault: VaultService, *, retention_days: int = DEFAULT_RETENTION_DAYS) -> None:
+    def __init__(
+        self, vault: VaultService, *, retention_days: int = DEFAULT_RETENTION_DAYS
+    ) -> None:
         if retention_days < 1:
             raise ValueError("retention_days must be at least 1")
         self._vault = vault
@@ -184,16 +213,25 @@ class TrashService:
             raise VaultUnavailable("Vault trash index cannot be read") from exc
         try:
             payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            # A corrupt index must never block the app: the payload stays on
-            # disk (nothing is deleted), it simply stops being listed.
-            return []
-        entries = payload.get("entries") if isinstance(payload, dict) else None
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise VaultUnavailable("Vault trash index is corrupt") from exc
+        valid_payload = (
+            isinstance(payload, dict)
+            and set(payload) == {"version", "entries"}
+            and payload.get("version") == INDEX_VERSION
+            and isinstance(payload.get("entries"), list)
+        )
+        if not valid_payload:
+            raise VaultUnavailable("Vault trash index is invalid")
+        entries = payload["entries"]
         items: list[TrashItem] = []
-        for raw_entry in entries or []:
+        seen: set[str] = set()
+        for raw_entry in entries:
             item = TrashItem.from_dict(raw_entry)
-            if item is not None:
-                items.append(item)
+            if item is None or item.id in seen:
+                raise VaultUnavailable("Vault trash index contains an invalid entry")
+            seen.add(item.id)
+            items.append(item)
         return items
 
     def _write_index(self, items: list[TrashItem]) -> None:
@@ -252,10 +290,23 @@ class TrashService:
     def _blob_path(self, item: TrashItem) -> Path:
         """Resolve an index blob inside the trash, refusing anything outside."""
         root = self.root
-        candidate = root.joinpath(*item.blob.split("/"))
+        validate_trash_id(item.id)
         try:
+            blob = validate_relative_path(item.blob)
+            if blob.split("/", 1)[0] != item.id:
+                raise ValueError("blob id mismatch")
+            candidate = root.joinpath(*blob.split("/"))
             candidate.relative_to(root)
-        except ValueError as exc:
+            current = root
+            for part in blob.split("/"):
+                current = current / part
+                try:
+                    info = current.lstat()
+                except FileNotFoundError:
+                    break
+                if stat.S_ISLNK(info.st_mode):
+                    raise InvalidOperation("Trash payload must not be a symbolic link")
+        except (ValueError, OSError) as exc:
             raise InvalidOperation("Trash payload is outside the trash") from exc
         return candidate
 
@@ -266,7 +317,8 @@ class TrashService:
         """Retention view: days left, rounded up so day one reads "30 days"."""
         expires = self._expires_at(item)
         seconds = (expires - datetime.now(UTC)).total_seconds()
-        return TrashView(item=item, expires_at=expires, days_remaining=0 if seconds <= 0 else math.ceil(seconds / 86400))
+        days_remaining = 0 if seconds <= 0 else math.ceil(seconds / 86400)
+        return TrashView(item=item, expires_at=expires, days_remaining=days_remaining)
 
     # -- operations ---------------------------------------------------------
     def trash(self, relative_path: str, expected_sha256: str | None) -> TrashItem:
@@ -274,11 +326,11 @@ class TrashService:
         relative = self._vault._validate_public_path(relative_path)  # noqa: SLF001 - shared rule
         vault = self._vault
         with vault._mutation_lock:  # noqa: SLF001 - one mutation at a time per Vault
-            self.purge_expired()
+            self.purge_expired(limit=_DEFAULT_PURGE_BATCH_SIZE)
             source = vault.safety.resolve(relative, allow_missing=False)
             vault.safety.assert_safe_existing(source, relative_path=relative)
             info = source.lstat()
-            if stat.S_ISLNK(info.st_mode):  # pragma: no cover - assert_safe_existing already rejects
+            if stat.S_ISLNK(info.st_mode):  # pragma: no cover
                 raise InvalidOperation("Symbolic links cannot be trashed")
             if stat.S_ISREG(info.st_mode):
                 if not expected_sha256:
@@ -302,13 +354,19 @@ class TrashService:
                 raise AtomicWriteError("Vault trash entry could not be created") from exc
             destination = holder / name
             try:
-                shutil.move(str(source), str(destination))
+                os.rename(source, destination)
             except OSError as exc:
                 with suppress(OSError):
                     shutil.rmtree(holder, ignore_errors=True)
                 raise AtomicWriteError("Vault item could not be moved to the trash") from exc
 
-            byte_length, file_count = self._measure(destination)
+            try:
+                byte_length, file_count = self._measure(destination)
+            except Exception:
+                os.rename(destination, source)
+                with suppress(OSError):
+                    holder.rmdir()
+                raise
             item = TrashItem(
                 id=identifier,
                 original_path=relative,
@@ -320,19 +378,32 @@ class TrashService:
             )
             items = self._load_index()
             items.append(item)
-            self._write_index(items)
+            try:
+                self._write_index(items)
+            except Exception:
+                # The source remains recoverable even if committing the index fails.
+                with suppress(OSError):
+                    os.rename(destination, source)
+                    holder.rmdir()
+                raise
             return item
 
     def list_entries(self) -> list[TrashView]:
+        # Quarantine cleanup runs outside the Vault mutation lock and is bounded
+        # by a small number of directory trees per request.
+        # Validate the derived root before glob/rename/rmtree maintenance; the
+        # path may have been replaced since this service was constructed.
+        self._ensure_root()
+        self._clean_quarantine(limit=_DEFAULT_PURGE_BATCH_SIZE)
+        self.purge_expired(limit=_DEFAULT_PURGE_BATCH_SIZE)
         with self._vault._mutation_lock:  # noqa: SLF001
-            self.purge_expired()
             views = [self.view(item) for item in self._load_index()]
         views.sort(key=lambda view: view.item.deleted_at, reverse=True)
         return views
 
     def _entry(self, entry_id: str) -> tuple[list[TrashItem], TrashItem]:
         items = self._load_index()
-        for index, item in enumerate(items):
+        for item in items:
             if item.id == entry_id:
                 return items, item
         raise PathNotFound("Trash entry was not found")
@@ -346,7 +417,7 @@ class TrashService:
         """
         vault = self._vault
         with vault._mutation_lock:  # noqa: SLF001
-            self.purge_expired()
+            self.purge_expired(limit=_DEFAULT_PURGE_BATCH_SIZE)
             items, item = self._entry(entry_id)
             blob = self._blob_path(item)
             vault.safety.assert_safe_existing(blob, relative_path=item.blob)
@@ -365,17 +436,24 @@ class TrashService:
                     parent.mkdir(parents=True, exist_ok=True)
                 except OSError as exc:
                     raise VaultUnavailable("Vault folder could not be recreated") from exc
-            vault.safety.assert_safe_existing(parent, relative_path=vault.safety.display_path(parent))
+            relative_parent = vault.safety.display_path(parent)
+            vault.safety.assert_safe_existing(parent, relative_path=relative_parent)
             try:
-                shutil.move(str(blob), str(target))
+                os.rename(blob, target)
             except OSError as exc:
                 raise AtomicWriteError("Trash entry could not be restored") from exc
 
             holder = blob.parent
+            remaining = [entry for entry in items if entry.id != item.id]
+            try:
+                self._write_index(remaining)
+            except Exception:
+                # Keep the index authoritative when restoring cannot commit.
+                with suppress(OSError):
+                    os.rename(target, blob)
+                raise
             with suppress(OSError):
                 holder.rmdir()
-            remaining = [entry for entry in items if entry.id != item.id]
-            self._write_index(remaining)
             return target_relative, target_relative != item.original_path
 
     def _free_name(self, relative_path: str) -> str:
@@ -396,25 +474,81 @@ class TrashService:
         raise AlreadyExists("No free name is available for the restore", path=relative_path)
 
     def delete(self, entry_id: str) -> str:
-        """Remove one entry permanently (the payload, then the index record)."""
+        """Remove one entry permanently via rollback-safe quarantine."""
         with self._vault._mutation_lock:  # noqa: SLF001
             items, item = self._entry(entry_id)
-            self._remove_payload(item)
-            self._write_index([entry for entry in items if entry.id != item.id])
-            return item.original_path
+            quarantine = self._quarantine_payload(item)
+            try:
+                self._write_index([entry for entry in items if entry.id != item.id])
+            except Exception:
+                self._restore_quarantine(item, quarantine)
+                raise
+        self._delete_quarantine(quarantine)
+        return item.original_path
 
     def empty(self) -> int:
         """Permanently remove every entry; returns how many were removed."""
         with self._vault._mutation_lock:  # noqa: SLF001
             items = self._load_index()
-            for item in items:
-                self._remove_payload(item)
-            if items:
-                self._write_index([])
-            return len(items)
+            quarantined: list[tuple[TrashItem, Path | None]] = []
+            try:
+                for item in items:
+                    quarantined.append((item, self._quarantine_payload(item)))
+                if items:
+                    self._write_index([])
+            except Exception:
+                for item, quarantine in reversed(quarantined):
+                    self._restore_quarantine(item, quarantine)
+                raise
+        for _item, quarantine in quarantined:
+            if quarantine is not None:
+                self._delete_quarantine(quarantine)
+        return len(items)
 
-    def purge_expired(self, *, now: datetime | None = None) -> int:
-        """Drop entries past the retention window; returns how many went."""
+    def _quarantine_payload(self, item: TrashItem) -> Path | None:
+        """Atomically detach a payload so index failure can restore it."""
+        self._blob_path(item)
+        holder = self.root / item.id
+        try:
+            info = holder.lstat()
+        except FileNotFoundError:
+            return None
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise InvalidOperation("Trash entry must be a directory")
+        quarantine = self.root / f".delete-{item.id}-{uuid.uuid4().hex[:8]}"
+        try:
+            os.rename(holder, quarantine)
+        except OSError as exc:
+            raise AtomicWriteError("Trash entry could not be quarantined") from exc
+        return quarantine
+
+    def _restore_quarantine(self, item: TrashItem, quarantine: Path | None) -> None:
+        if quarantine is None:
+            return
+        with suppress(OSError):
+            os.rename(quarantine, self.root / item.id)
+
+    @staticmethod
+    def _delete_quarantine(quarantine: Path) -> None:
+        try:
+            shutil.rmtree(quarantine)
+        except OSError:
+            # Leave the detached tree for maintenance rather than restoring it
+            # after its index record has been committed away.
+            pass
+
+    def purge_expired(self, *, now: datetime | None = None, limit: int | None = None) -> int:
+        """Drop expired entries, optionally capped to a bounded batch.
+
+        With ``limit`` this is safe for request paths: at most that many trash
+        entries are traversed/deleted per call. Passing ``None`` drains all for
+        explicit maintenance operations.
+        """
+        invalid_limit = limit is not None and (
+            not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
+        )
+        if invalid_limit:
+            raise ValueError("limit must be a positive integer")
         moment = now or datetime.now(UTC)
         with self._vault._mutation_lock:  # noqa: SLF001
             items = self._load_index()
@@ -423,17 +557,82 @@ class TrashService:
             kept: list[TrashItem] = []
             expired: list[TrashItem] = []
             for item in items:
-                (expired if self._expires_at(item) <= moment else kept).append(item)
+                if self._expires_at(item) <= moment and (limit is None or len(expired) < limit):
+                    expired.append(item)
+                else:
+                    kept.append(item)
             if not expired:
                 return 0
-            for item in expired:
-                self._remove_payload(item)
-            self._write_index(kept)
-            return len(expired)
+            moved: list[tuple[TrashItem, Path]] = []
+            try:
+                for item in expired:
+                    holder = self.root / item.id
+                    if not holder.exists() and not holder.is_symlink():
+                        continue
+                    self._blob_path(item)
+                    quarantine = self.root / f"{_PURGE_DIR_PREFIX}{item.id}-{uuid.uuid4().hex[:8]}"
+                    os.rename(holder, quarantine)
+                    moved.append((item, quarantine))
+                self._write_index(kept)
+            except Exception:
+                for item, quarantine in reversed(moved):
+                    with suppress(OSError):
+                        os.rename(quarantine, self.root / item.id)
+                raise
+
+        # Recursive deletion may be arbitrarily expensive; the tree is already
+        # detached from the index and remains a recoverable quarantine orphan.
+        for _item, quarantine in moved:
+            try:
+                shutil.rmtree(quarantine)
+            except OSError:
+                pass  # retry on a later list via _clean_quarantine
+        return len(expired)
+
+    def _clean_quarantine(self, *, limit: int) -> int:
+        """Claim abandoned quarantine trees under lock, delete them outside."""
+        claimed: list[Path] = []
+        with self._vault._mutation_lock:  # noqa: SLF001
+            try:
+                self._ensure_root()
+                entries = sorted(
+                    [*self.root.glob(f"{_PURGE_DIR_PREFIX}*"), *self.root.glob(".delete-*")]
+                )[:limit]
+                indexed_ids = {item.id for item in self._load_index()}
+            except (OSError, VaultUnavailable):
+                return 0
+            for entry in entries:
+                if entry.name.startswith(".delete-"):
+                    identifier = entry.name[len(".delete-") :].split("-", 1)[0]
+                    if identifier in indexed_ids:
+                        with suppress(OSError):
+                            os.rename(entry, self.root / identifier)
+                        continue
+                claim = self.root / f".gc-{uuid.uuid4().hex}"
+                try:
+                    os.rename(entry, claim)
+                    claimed.append(claim)
+                except OSError:
+                    continue
+        removed = 0
+        for entry in claimed:
+            try:
+                info = entry.lstat()
+                if stat.S_ISLNK(info.st_mode):
+                    entry.unlink()
+                elif stat.S_ISDIR(info.st_mode):
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+                removed += 1
+            except OSError:
+                continue  # retain for the next retry
+        return removed
 
     def _remove_payload(self, item: TrashItem) -> None:
         """Delete a payload; a payload that is already gone is not an error."""
         root = self.root
+        payload = self._blob_path(item)
         holder = root / item.id
         try:
             holder.relative_to(root)
@@ -448,6 +647,9 @@ class TrashService:
         if stat.S_ISLNK(info.st_mode):
             raise InvalidOperation("Trash entry must not be a symbolic link")
         try:
+            payload_info = payload.lstat()
+            if stat.S_ISLNK(payload_info.st_mode):
+                raise InvalidOperation("Trash payload must not be a symbolic link")
             if stat.S_ISDIR(info.st_mode):
                 shutil.rmtree(holder)
             else:

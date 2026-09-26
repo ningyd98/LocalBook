@@ -237,6 +237,7 @@ class RetrievalStats:
     embedding_ms: float = 0.0
     rerank_ms: float = 0.0
     generation_ms: float = 0.0
+    total_ms: float = 0.0
     degraded: list[str] = field(default_factory=list)
     debug: dict[str, Any] | None = None
 

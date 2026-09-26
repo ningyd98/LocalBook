@@ -236,10 +236,6 @@ class HybridRetriever(BaseRetriever):
                     link_results = self._new_link_candidates(
                         link_results, keyword_results, vector_results
                     )
-                if self.link_add_only:
-                    link_results = self._new_link_candidates(
-                        link_results, keyword_results, vector_results
-                    )
 
         stats.fts_candidates = len(keyword_results)
         stats.vector_candidates = len(vector_results)

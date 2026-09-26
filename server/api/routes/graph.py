@@ -35,12 +35,14 @@ def get_global_graph(
     offset: int = Query(default=0),
     tag: str | None = Query(default=None),
     include_broken: bool = Query(default=True),
+    include_semantic: bool = Query(default=True),
 ) -> GraphResponse:
     return service.global_graph(
         limit=limit,
         offset=offset,
         tag=tag,
         include_broken=include_broken,
+        include_semantic=include_semantic,
     )
 
 
@@ -54,6 +56,7 @@ def get_local_graph(
     offset: int = Query(default=0),
     tag: str | None = Query(default=None),
     include_broken: bool = Query(default=True),
+    include_semantic: bool = Query(default=True),
 ) -> GraphResponse:
     return service.local_graph(
         note,
@@ -63,6 +66,7 @@ def get_local_graph(
         offset=offset,
         tag=tag,
         include_broken=include_broken,
+        include_semantic=include_semantic,
     )
 
 
@@ -73,12 +77,14 @@ def get_tag_graph(
     limit: int | None = Query(default=None, ge=1),
     offset: int = Query(default=0),
     include_broken: bool = Query(default=True),
+    include_semantic: bool = Query(default=True),
 ) -> GraphResponse:
     return service.tag_graph(
         tag,
         limit=limit,
         offset=offset,
         include_broken=include_broken,
+        include_semantic=include_semantic,
     )
 
 
@@ -89,12 +95,14 @@ def get_tag_graph_by_query(
     limit: int | None = Query(default=None, ge=1),
     offset: int = Query(default=0),
     include_broken: bool = Query(default=True),
+    include_semantic: bool = Query(default=True),
 ) -> GraphResponse:
     return service.tag_graph(
         tag,
         limit=limit,
         offset=offset,
         include_broken=include_broken,
+        include_semantic=include_semantic,
     )
 
 

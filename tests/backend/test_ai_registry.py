@@ -35,8 +35,9 @@ def test_default_registry_exposes_exactly_the_six_m6_prompts() -> None:
         "extract_todos",
         "classify_note",
     }
-    versions = {prompt.version for prompt in prompts}
-    assert versions == {"m6.1"}
+    versions = {prompt.name: prompt.version for prompt in prompts}
+    assert versions["chat"] == "m6.2"
+    assert {version for name, version in versions.items() if name != "chat"} == {"m6.1"}
 
 
 def test_prompt_metadata_schema_names_resolve_to_pydantic_models() -> None:
@@ -59,8 +60,8 @@ def test_prompt_metadata_schema_names_resolve_to_pydantic_models() -> None:
 def test_get_returns_single_prompt_and_version_string() -> None:
     registry = PromptRegistry()
     prompt = registry.get("chat")
-    assert prompt.prompt_version == "chat@m6.1"
-    assert registry.get("chat", "m6.1").prompt_version == "chat@m6.1"
+    assert prompt.prompt_version == "chat@m6.2"
+    assert registry.get("chat", "m6.2").prompt_version == "chat@m6.2"
     assert prompt.body  # body text really exists
     assert "Answer using only the supplied" in prompt.body
 

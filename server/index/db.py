@@ -1,12 +1,13 @@
 """M4 SQLite connection management for the derived index (PLAN-M4 §5.2/§5.3).
 
-Design (single connection + caller-held RLock):
+Design (single connection + shared RLock):
 
 - One ``sqlite3.Connection`` with ``check_same_thread=False`` plus a
-  ``threading.RLock`` owned by ``DerivedIndexService`` serialises every read
-  and write.  The local Vault is a single-user scenario and M3 already used an
-  RLock; WAL matters here mainly for crash safety and future multi-connection
-  extension, not for concurrent throughput (PLAN-M4 §5.3).
+  ``threading.RLock`` owned by this connection wrapper serialises reads and
+  transactions across the index, RAG, and history services. The index service
+  also retains its own lock for its multi-step in-memory state. WAL matters
+  mainly for crash safety and future multi-connection extension, not for
+  concurrent throughput (PLAN-M4 §5.3).
 - PRAGMAs: ``journal_mode=WAL``, ``synchronous=NORMAL``,
   ``foreign_keys=ON`` (enables the ``ON DELETE CASCADE`` clean-up of
   tags/properties/links/backlinks) and ``busy_timeout=5000``.
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -92,6 +94,7 @@ class IndexDatabase:
             raise ValueError(f"unsupported synchronous: {synchronous!r}")
         self._conn: sqlite3.Connection | None = None
         self._fts_available = False
+        self._connection_lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # Open / close / lifecycle
@@ -208,14 +211,15 @@ class IndexDatabase:
             _unlink_quietly(Path(str(self.path) + suffix))
 
     def close(self) -> None:
-        conn = self._conn
-        self._conn = None
-        self._fts_available = False
-        if conn is not None:
-            try:
-                conn.close()
-            except sqlite3.Error:  # pragma: no cover - defensive
-                logger.exception("derived index db close failed")
+        with self._connection_lock:
+            conn = self._conn
+            self._conn = None
+            self._fts_available = False
+            if conn is not None:
+                try:
+                    conn.close()
+                except sqlite3.Error:  # pragma: no cover - defensive
+                    logger.exception("derived index db close failed")
 
     def clear(self) -> None:
         """Close and remove the on-disk database (derived data is disposable)."""
@@ -313,7 +317,7 @@ class IndexDatabase:
         return False
 
     # ------------------------------------------------------------------
-    # Execution helpers (caller holds the index RLock)
+    # Execution helpers (shared connection lock)
     # ------------------------------------------------------------------
 
     def _require_connection(self) -> sqlite3.Connection:
@@ -321,15 +325,24 @@ class IndexDatabase:
             raise IndexDatabaseError("Derived index database is not open")
         return self._conn
 
+    @contextmanager
+    def locked_connection(self) -> Iterator[sqlite3.Connection]:
+        """Guard multi-statement schema work on the shared connection."""
+        with self._connection_lock:
+            yield self._require_connection()
+
     def execute(self, sql: str, params: Any = ()) -> sqlite3.Cursor:
         """Execute one statement in autocommit mode (no implicit transaction)."""
-        return self._require_connection().execute(sql, params)
+        with self.locked_connection() as conn:
+            return conn.execute(sql, params)
 
     def fetchone(self, sql: str, params: Any = ()) -> sqlite3.Row | None:
-        return self.execute(sql, params).fetchone()
+        with self.locked_connection() as conn:
+            return conn.execute(sql, params).fetchone()
 
     def fetchall(self, sql: str, params: Any = ()) -> list[sqlite3.Row]:
-        return self.execute(sql, params).fetchall()
+        with self.locked_connection() as conn:
+            return conn.execute(sql, params).fetchall()
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -338,18 +351,18 @@ class IndexDatabase:
         Commits on success and rolls back on any exception so a half-applied
         rebuild or upsert can never be observed.
         """
-        conn = self._require_connection()
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            yield conn
-        except BaseException:
+        with self.locked_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             try:
-                conn.execute("ROLLBACK")
-            except sqlite3.Error:  # pragma: no cover - defensive
-                logger.exception("derived index rollback failed")
-            raise
-        else:
-            conn.execute("COMMIT")
+                yield conn
+            except BaseException:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:  # pragma: no cover - defensive
+                    logger.exception("derived index rollback failed")
+                raise
+            else:
+                conn.execute("COMMIT")
 
 
 __all__ = [

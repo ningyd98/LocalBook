@@ -1,0 +1,5 @@
+include README.md
+recursive-include server/ai/prompts *.md
+recursive-include server/ai/profiles *.md
+recursive-include server/rag/prompts *.md
+recursive-include server/reader/migrations *.sql *.md

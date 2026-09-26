@@ -7,6 +7,7 @@ export interface ThemeColors {
   note: string;
   tag: string;
   link: string;
+  semantic: string;
   tagEdge: string;
   backlink: string;
   broken: string;
@@ -21,6 +22,7 @@ export const THEMES: Record<GraphTheme, ThemeColors> = {
     note: "#7750c9",
     tag: "#7c3aed",
     link: "#64748b",
+    semantic: "#0c8f8b",
     tagEdge: "#a78bfa",
     backlink: "#0d9488",
     broken: "#dc2626",
@@ -33,6 +35,7 @@ export const THEMES: Record<GraphTheme, ThemeColors> = {
     note: "#aaa2c8",
     tag: "#a78bfa",
     link: "#64748b",
+    semantic: "#46c7c0",
     tagEdge: "#a78bfa",
     backlink: "#2dd4bf",
     broken: "#f87171",
@@ -57,6 +60,7 @@ export function legend(theme: GraphTheme): LegendEntry[] {
     { key: "note", label: "Note", color: colors.note, marker: "circle" },
     { key: "tag", label: "Tag", color: colors.tag, marker: "square" },
     { key: "link", label: "Wikilink", color: colors.link, lineStyle: "solid" },
+    { key: "semantic", label: "Content similarity", color: colors.semantic, lineStyle: "dotted" },
     { key: "tag-edge", label: "Tag edge", color: colors.tagEdge, lineStyle: "dashed" },
     { key: "ambiguous", label: "Ambiguous link", color: colors.ambiguous, lineStyle: "dotted" },
     { key: "broken", label: "Broken link (dangling)", color: colors.broken, lineStyle: "dashed" },
@@ -73,6 +77,7 @@ export function edgeColor(attrs: GraphEdgeAttrs, theme: GraphTheme): string {
   if (attrs.ambiguous) return colors.ambiguous;
   if (attrs.broken) return colors.broken;
   if (attrs.kind === "tag") return colors.tagEdge;
+  if (attrs.kind === "semantic") return colors.semantic;
   if (attrs.kind === "backlink") return colors.backlink;
   return colors.link;
 }
@@ -81,5 +86,6 @@ export function edgeLineStyle(attrs: GraphEdgeAttrs): "solid" | "dashed" | "dott
   if (attrs.ambiguous) return "dotted";
   if (attrs.broken) return "dashed";
   if (attrs.kind === "tag") return "dashed";
+  if (attrs.kind === "semantic") return "dotted";
   return "solid";
 }

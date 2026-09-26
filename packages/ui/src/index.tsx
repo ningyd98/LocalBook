@@ -11,7 +11,7 @@ export function StatusBanner({children,className}:{children:ReactNode;className?
 export function TreeRow({children,className,...props}:PropsWithChildren<HTMLAttributes<HTMLDivElement>>){return <div role="treeitem" className={cx("ui-tree-row",className)} {...props}>{children}</div>}
 export function Tab({children,...props}:PropsWithChildren<ButtonHTMLAttributes<HTMLButtonElement>>){return <button role="tab" className="ui-tab" {...props}>{children}</button>}
 
-export type IconName = "files" | "search" | "graph" | "ai" | "history" | "settings" | "close" | "chevron" | "folder" | "note" | "panelLeft" | "panelRight" | "refresh" | "edit" | "preview" | "split" | "link" | "check" | "arrow" | "sun" | "moon" | "paperclip" | "image" | "trash" | "plus" | "minus";
+export type IconName = "files" | "search" | "graph" | "ai" | "history" | "settings" | "close" | "chevron" | "folder" | "note" | "panelLeft" | "panelRight" | "refresh" | "edit" | "preview" | "split" | "link" | "check" | "arrow" | "sun" | "moon" | "paperclip" | "image" | "trash" | "plus" | "minus" | "download" | "print" | "outline" | "bold" | "italic" | "highlight" | "palette" | "table" | "eraser";
 const paths: Record<IconName, ReactNode> = {
   files: <><path d="M5 3h9l5 5v13H5z"/><path d="M14 3v6h5M8 13h8M8 17h6"/></>,
   search: <><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></>,
@@ -34,6 +34,15 @@ const paths: Record<IconName, ReactNode> = {
   paperclip: <path d="M20 11.5 12 19.5a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7-7"/>,
   trash: <><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6"/></>,
   plus: <path d="M12 5v14M5 12h14"/>, minus: <path d="M5 12h14"/>, image: <><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m4 18 5-5 4 4 3-3 4 4"/></>,
+  download: <><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 21h16"/></>,
+  print: <><path d="M7 8V3h10v5"/><rect x="4" y="8" width="16" height="8" rx="2"/><path d="M7 16h10v5H7z"/></>,
+  outline: <><path d="M9 6h12M9 12h12M9 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></>,
+  bold: <><path d="M7 4h6.5a4 4 0 0 1 0 8H7zM7 12h7.5a4 4 0 0 1 0 8H7z"/><path d="M7 4v16"/></>,
+  italic: <path d="M10 4h8M6 20h8M14 4 10 20"/>,
+  highlight: <><path d="m5 15 7-7 4 4-7 7H5z"/><path d="m14 6 2-2 4 4-2 2"/><path d="M4 21h16"/></>,
+  palette: <><circle cx="12" cy="12" r="9"/><circle cx="9" cy="9.5" r="1"/><circle cx="15" cy="9.5" r="1"/><circle cx="12" cy="15" r="1"/></>,
+  table: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10"/></>,
+  eraser: <><path d="m4 15 8-8 6 6-5 5H7z"/><path d="M4 21h16"/></>,
 };
 export function Icon({ name, size = 18, className }: { name: IconName; size?: number; className?: string }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>{paths[name]}</svg>;

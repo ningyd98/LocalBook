@@ -54,6 +54,7 @@ from ..vault.events import VaultEvent
 from ..vault.service import VaultService
 from .db import DatabaseUnavailable, IndexDatabase, IndexDatabaseError
 from .errors import IndexUnavailable
+from .schema import build_fts_ddl
 from .schemas import (
     GraphLinkRow,
     GraphNoteRow,
@@ -84,8 +85,7 @@ _SELECT_SHA_SQL = "SELECT sha256 FROM notes WHERE path = ?"
 _SELECT_ROWID_SQL = "SELECT rowid FROM notes WHERE path = ?"
 
 _FTS_INSERT_SQL = (
-    "INSERT INTO notes_fts (rowid, path, title, basename, tags, body) "
-    "VALUES (?, ?, ?, ?, ?, ?)"
+    "INSERT INTO notes_fts (rowid, path, title, basename, tags, body) VALUES (?, ?, ?, ?, ?, ?)"
 )
 _FTS_DELETE_SQL = "DELETE FROM notes_fts WHERE rowid = ?"
 
@@ -148,9 +148,7 @@ class DerivedIndexService:
             root = Path(vault.root)
         except Exception:  # pragma: no cover - VaultService always has root
             root = None  # type: ignore[assignment]
-        self._db_path = (
-            derived_db_path(root, db_filename) if root is not None else None
-        )
+        self._db_path = derived_db_path(root, db_filename) if root is not None else None
         self._db_kwargs = {
             "journal_mode": journal_mode,
             "synchronous": synchronous,
@@ -308,6 +306,27 @@ class DerivedIndexService:
                 return []
             return [self._entry_from_row(row) for row in rows]
 
+    def note_fingerprints(self, paths: set[str] | None = None) -> dict[str, str]:
+        """Return note path/SHA pairs without loading derived body text."""
+        with self._lock:
+            if self._db is None:
+                return {}
+            try:
+                if paths is None:
+                    rows = self._db.fetchall("SELECT path, sha256 FROM notes ORDER BY path")
+                elif not paths:
+                    return {}
+                else:
+                    marks = ",".join("?" for _ in paths)
+                    rows = self._db.fetchall(
+                        f"SELECT path, sha256 FROM notes WHERE path IN ({marks})",
+                        sorted(paths),
+                    )
+            except sqlite3.Error as exc:
+                logger.warning("derived index fingerprint read failed: %s", exc)
+                return {}
+            return {str(row["path"]): str(row["sha256"]) for row in rows}
+
     def note_count(self) -> int:
         with self._lock:
             if self._db is None:
@@ -334,15 +353,11 @@ class DerivedIndexService:
             properties=self._properties_of(path),
             frontmatter_status=str(row["frontmatter_status"]),  # type: ignore[arg-type]
             parse_error=(
-                json.loads(row["parse_error_json"])
-                if row["parse_error_json"] is not None
-                else None
+                json.loads(row["parse_error_json"]) if row["parse_error_json"] is not None else None
             ),
             outgoing=outgoing,
             resolved_targets={
-                ref.resolved_path
-                for ref in outgoing
-                if ref.resolved_path is not None
+                ref.resolved_path for ref in outgoing if ref.resolved_path is not None
             },
             search_folded=str(row["search_folded"] or ""),
             diagnostic=row["diagnostic"],
@@ -410,8 +425,80 @@ class DerivedIndexService:
     # Full rebuild
     # ------------------------------------------------------------------
 
+    def refresh(self) -> IndexRebuildResponse:
+        """Reuse a complete, fingerprint-matched index at startup.
+
+        A full FTS rebuild can hold the shared database lock for a long time on
+        large Vaults. The existing derived rows are safe to reuse when their
+        path set, source digests and FTS row count still match the Vault. A
+        mismatch falls back to the atomic full rebuild.
+        """
+        started = time.perf_counter()
+        logger.info("startup index fingerprint check started")
+        with self._lock:
+            if not self._open_database():
+                return self.rebuild()
+            assert self._db is not None
+            try:
+                tree = self._vault.list_tree("", recursive=True)
+                files = sorted(
+                    (item.path for item in tree if item.kind == "file" and item.path != "."),
+                    key=str.casefold,
+                )
+                paths = {path for path in files if _markdown_file(path)}
+                rows = self._db.fetchall("SELECT path, sha256 FROM notes")
+                stored = {str(row["path"]): row for row in rows}
+                if len(stored) != len(paths) or set(stored) != paths:
+                    return self.rebuild()
+                if self._fts_available:
+                    fts_row = self._db.fetchone("SELECT COUNT(*) AS n FROM notes_fts")
+                    if fts_row is None or int(fts_row["n"]) != len(paths):
+                        return self.rebuild()
+                failed = 0
+                for path in paths:
+                    data, digest = self._vault.read_bytes(path)
+                    if digest != stored[path]["sha256"]:
+                        return self.rebuild()
+                    try:
+                        data.decode("utf-8")
+                    except UnicodeDecodeError:
+                        failed += 1
+            except (VaultError, sqlite3.Error, IndexDatabaseError):
+                return self.rebuild()
+
+            full_map: dict[str, list[str]] = {}
+            noext_map: dict[str, list[str]] = {}
+            for path in files:
+                full_map.setdefault(path.rsplit("/", 1)[-1].casefold(), []).append(path)
+                if _markdown_file(path):
+                    name = path.rsplit("/", 1)[-1]
+                    noext_map.setdefault(_strip_extension(name).casefold(), []).append(path)
+            self._basenames_full = full_map
+            self._basenames_noext = noext_map
+            self._last_skipped = 0
+            self._last_failed = failed
+            self._last_built_at = datetime.now(UTC)
+            self._build_state = "ready"
+            self._build_error = None
+            duration_ms = (time.perf_counter() - started) * 1000.0
+            logger.info(
+                "startup index fingerprint check reused notes=%d ms=%.1f",
+                len(rows),
+                duration_ms,
+            )
+            logger.info("index reused notes=%d duration_ms=%.1f", len(rows), duration_ms)
+            return IndexRebuildResponse(
+                indexed=max(0, len(rows) - self._last_failed),
+                skipped=0,
+                failed=self._last_failed,
+                duration_ms=round(duration_ms, 3),
+                ready=True,
+                generated_at=self._last_built_at,
+            )
+
     def rebuild(self) -> IndexRebuildResponse:
         started = time.perf_counter()
+        logger.info("full derived index rebuild started")
         with self._lock:
             if not self._open_database():
                 self._set_unavailable("Derived index database is unavailable")
@@ -425,11 +512,7 @@ class DerivedIndexService:
                 raise IndexUnavailable() from exc
 
             files = sorted(
-                (
-                    item.path
-                    for item in tree
-                    if item.kind == "file" and item.path != "."
-                ),
+                (item.path for item in tree if item.kind == "file" and item.path != "."),
                 key=str.casefold,
             )
             full_map: dict[str, list[str]] = {}
@@ -450,7 +533,12 @@ class DerivedIndexService:
                 with self._db.transaction() as conn:
                     conn.execute("DELETE FROM notes")
                     if self._fts_available:
-                        conn.execute("DELETE FROM notes_fts")
+                        # A regular FTS5 DELETE tokenizes every old row while
+                        # holding the index lock. On a large Vault this can
+                        # stall graph and search for minutes. Rebuild the
+                        # derived FTS table in the same transaction instead.
+                        conn.execute("DROP TABLE notes_fts")
+                        conn.execute(build_fts_ddl(self._db.fts_tokenizer))
                     for path in files:
                         if not _markdown_file(path):
                             continue
@@ -557,9 +645,7 @@ class DerivedIndexService:
             resolved_outgoing.append(resolved)
             if resolved.resolved_path:
                 resolved_targets.add(resolved.resolved_path)
-        searchable = " ".join(
-            (stem, title, " ".join(frontmatter.tags_folded), body)
-        )
+        searchable = " ".join((stem, title, " ".join(frontmatter.tags_folded), body))
         return NoteIndexEntry(
             path=path,
             sha256=digest,
@@ -663,14 +749,12 @@ class DerivedIndexService:
         tags_folded = entry.tags_folded or [tag.casefold() for tag in entry.tags]
         for seq, (tag, folded) in enumerate(zip(entry.tags, tags_folded, strict=False)):
             conn.execute(
-                "INSERT INTO tags (note_path, tag, tag_folded, seq) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO tags (note_path, tag, tag_folded, seq) VALUES (?, ?, ?, ?)",
                 (path, tag, folded, seq),
             )
         for key, value in sorted(entry.properties.items()):
             conn.execute(
-                "INSERT INTO properties (note_path, key, value_json) "
-                "VALUES (?, ?, ?)",
+                "INSERT INTO properties (note_path, key, value_json) VALUES (?, ?, ?)",
                 (path, str(key), _dumps(value) or "null"),
             )
         for seq, ref in enumerate(entry.outgoing):
@@ -742,7 +826,7 @@ class DerivedIndexService:
 
     def handle_event(self, event: VaultEvent) -> None:
         """Consume one normalized watcher event (create/modify/delete/move).
-        
+
         P1-3 fix: Buffer events for 150ms to merge consecutive operations on the
         same path (e.g., atomic write generates delete+create). Final processing
         checks the actual disk state rather than blindly applying the event.
@@ -751,27 +835,27 @@ class DerivedIndexService:
             with self._lock:
                 if self._db is None:
                     return  # index unavailable; events are dropped until rebuild
-                
+
                 # Determine the target path(s)
                 if event.kind == "move":
                     # Move is handled immediately without buffering
                     self._apply_delete(event.old_path or "")
                     self._apply_create(event.new_path or "")
                     return
-                
+
                 path = event.path or ""
                 if not path:
                     return
-                
+
                 # Cancel any existing timer for this path
                 old_timer = self._event_timers.pop(path, None)
                 if old_timer is not None:
                     old_timer.cancel()
-                
+
                 # Buffer this event
                 now = time.time()
                 self._pending_events[path] = (event, now)
-                
+
                 # Schedule delayed processing
                 timer = threading.Timer(0.15, self._flush_event, args=[path, now])
                 self._event_timers[path] = timer
@@ -781,7 +865,7 @@ class DerivedIndexService:
 
     def _flush_event(self, path: str, timestamp: float) -> None:
         """Process buffered event after delay, checking actual disk state.
-        
+
         P1-3: This runs after the debounce window. If the event was superseded by
         a newer one, we do nothing. Otherwise, we check if the file actually
         exists on disk and index/delete accordingly, ignoring the event type.
@@ -790,19 +874,19 @@ class DerivedIndexService:
             with self._lock:
                 if self._db is None:
                     return
-                
+
                 # Check if this event is still current
                 entry = self._pending_events.get(path)
                 if entry is None or entry[1] != timestamp:
                     return  # Superseded by a newer event
-                
+
                 # Remove from pending
                 del self._pending_events[path]
                 self._event_timers.pop(path, None)
-                
+
                 # Check actual disk state
                 exists = self._file_exists(path)
-                
+
                 if exists:
                     # File exists: index it (create or modify)
                     self._apply_create(path)
@@ -822,7 +906,7 @@ class DerivedIndexService:
 
     def flush_events(self) -> None:
         """Immediately process all buffered events (test helper).
-        
+
         P1-3: In production, events are debounced and processed after 150ms.
         Tests that want immediate consistency can call this method to force
         synchronous processing of all pending events.
@@ -832,9 +916,9 @@ class DerivedIndexService:
             for timer in self._event_timers.values():
                 timer.cancel()
             self._event_timers.clear()
-            
+
             # Process all pending events
-            for path, (event, _timestamp) in list(self._pending_events.items()):
+            for path, (_event, _timestamp) in list(self._pending_events.items()):
                 del self._pending_events[path]
                 exists = self._file_exists(path)
                 if exists:
@@ -844,7 +928,14 @@ class DerivedIndexService:
 
     def _apply_create(self, path: str) -> None:
         """Index (or re-index) one file event; directories are ignored."""
-        if not path or not _markdown_file(path):
+        if not path:
+            return
+        if not _markdown_file(path):
+            # Rebuilds include attachment basenames in these maps so Markdown
+            # references can resolve them. Keep incremental creates/moves in
+            # sync with that same source of truth without treating binary data
+            # as note content.
+            self._refresh_basenames(path)
             return
         try:
             data, digest = self._vault.read_bytes(path)
@@ -880,17 +971,13 @@ class DerivedIndexService:
     def _refresh_basenames(self, path: str) -> None:
         name = path.rsplit("/", 1)[-1]
         key_full = name.casefold()
-        existing_full = [
-            item for item in self._basenames_full.get(key_full, []) if item != path
-        ]
+        existing_full = [item for item in self._basenames_full.get(key_full, []) if item != path]
         existing_full.append(path)
         self._basenames_full[key_full] = sorted(existing_full, key=str.casefold)
         if _markdown_file(path):
             key_noext = _strip_extension(name).casefold()
             existing_noext = [
-                item
-                for item in self._basenames_noext.get(key_noext, [])
-                if item != path
+                item for item in self._basenames_noext.get(key_noext, []) if item != path
             ]
             existing_noext.append(path)
             self._basenames_noext[key_noext] = sorted(existing_noext, key=str.casefold)
@@ -912,9 +999,7 @@ class DerivedIndexService:
         name = path.rsplit("/", 1)[-1]
         key_full = name.casefold()
         if key_full in self._basenames_full:
-            remaining = [
-                item for item in self._basenames_full[key_full] if item != path
-            ]
+            remaining = [item for item in self._basenames_full[key_full] if item != path]
             if remaining:
                 self._basenames_full[key_full] = remaining
             else:
@@ -922,9 +1007,7 @@ class DerivedIndexService:
         if _markdown_file(path):
             key_noext = _strip_extension(name).casefold()
             if key_noext in self._basenames_noext:
-                remaining = [
-                    item for item in self._basenames_noext[key_noext] if item != path
-                ]
+                remaining = [item for item in self._basenames_noext[key_noext] if item != path]
                 if remaining:
                     self._basenames_noext[key_noext] = remaining
                 else:
@@ -939,9 +1022,7 @@ class DerivedIndexService:
             if self._db is None:
                 return []
             try:
-                rows = self._db.fetchall(
-                    "SELECT 1 FROM notes WHERE path = ?", (path,)
-                )
+                rows = self._db.fetchall("SELECT 1 FROM notes WHERE path = ?", (path,))
             except sqlite3.Error:
                 return []
             if not rows:
@@ -956,8 +1037,7 @@ class DerivedIndexService:
                 return []
             try:
                 source_rows = self._db.fetchall(
-                    "SELECT source_path FROM backlinks WHERE target_path = ? "
-                    "ORDER BY source_path",
+                    "SELECT source_path FROM backlinks WHERE target_path = ? ORDER BY source_path",
                     (path,),
                 )
             except sqlite3.Error:
@@ -1025,9 +1105,7 @@ class DerivedIndexService:
             if self._db is None:
                 return False
             try:
-                row = self._db.fetchone(
-                    "SELECT 1 FROM notes WHERE path = ?", (path,)
-                )
+                row = self._db.fetchone("SELECT 1 FROM notes WHERE path = ?", (path,))
             except sqlite3.Error:
                 logger.warning("derived index note_exists read failed")
                 return False
@@ -1039,9 +1117,7 @@ class DerivedIndexService:
             if self._db is None:
                 return None
             try:
-                row = self._db.fetchone(
-                    "SELECT title FROM notes WHERE path = ?", (path,)
-                )
+                row = self._db.fetchone("SELECT title FROM notes WHERE path = ?", (path,))
             except sqlite3.Error:
                 logger.warning("derived index note_title read failed")
                 return None
@@ -1059,8 +1135,7 @@ class DerivedIndexService:
                 return []
             try:
                 rows = self._db.fetchall(
-                    "SELECT tag, tag_folded FROM tags WHERE note_path = ? "
-                    "ORDER BY seq",
+                    "SELECT tag, tag_folded FROM tags WHERE note_path = ? ORDER BY seq",
                     (path,),
                 )
             except sqlite3.Error:
@@ -1090,8 +1165,7 @@ class DerivedIndexService:
                     "SELECT path, title, basename FROM notes ORDER BY path"
                 )
                 tag_rows = self._db.fetchall(
-                    "SELECT note_path, tag, tag_folded, seq FROM tags "
-                    "ORDER BY note_path, seq"
+                    "SELECT note_path, tag, tag_folded, seq FROM tags ORDER BY note_path, seq"
                 )
                 link_rows = self._db.fetchall(
                     "SELECT source_path, seq, target, raw, kind, display, "
@@ -1134,12 +1208,8 @@ class DerivedIndexService:
                 raise IndexUnavailable()
             try:
                 note_row = self._db.fetchone("SELECT COUNT(*) AS n FROM notes")
-                tag_row = self._db.fetchone(
-                    "SELECT COUNT(DISTINCT tag_folded) AS n FROM tags"
-                )
-                link_row = self._db.fetchone(
-                    "SELECT COUNT(*) AS n FROM links"
-                )
+                tag_row = self._db.fetchone("SELECT COUNT(DISTINCT tag_folded) AS n FROM tags")
+                link_row = self._db.fetchone("SELECT COUNT(*) AS n FROM links")
             except sqlite3.Error as exc:
                 logger.warning("derived index graph totals read failed: %s", exc)
                 raise IndexUnavailable() from exc
@@ -1152,9 +1222,7 @@ class DerivedIndexService:
     @staticmethod
     def _graph_link_row(row: sqlite3.Row) -> GraphLinkRow:
         try:
-            candidates = (
-                json.loads(row["candidates_json"]) if row["candidates_json"] else []
-            )
+            candidates = json.loads(row["candidates_json"]) if row["candidates_json"] else []
         except (TypeError, ValueError):
             candidates = []
         return GraphLinkRow(
@@ -1191,9 +1259,7 @@ class DerivedIndexService:
                 return []
             try:
                 rows = self._db.fetchall(
-                    "SELECT n.path, n.title, n.basename, n.text, "
-                    + _FTS_WEIGHTS
-                    + " AS score "
+                    "SELECT n.path, n.title, n.basename, n.text, " + _FTS_WEIGHTS + " AS score "
                     "FROM notes_fts JOIN notes n ON n.rowid = notes_fts.rowid "
                     "WHERE n.frontmatter_status != 'unreadable' "
                     "AND n.diagnostic IS NULL AND notes_fts MATCH ? "
@@ -1225,9 +1291,7 @@ class DerivedIndexService:
         with self._lock:
             if self._db is None or not terms:
                 return []
-            clauses = " AND ".join(
-                "instr(n.search_folded, ?) > 0" for _ in terms
-            )
+            clauses = " AND ".join("instr(n.search_folded, ?) > 0" for _ in terms)
             sql = (
                 "SELECT n.path, n.title, n.basename, n.text, "
                 "(SELECT group_concat(t.tag_folded, ' ') FROM tags t "

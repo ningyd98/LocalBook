@@ -239,6 +239,12 @@ def safe_attachment_name(
     raise InvalidRequest("No available attachment name", path=directory or None)
 
 
+_AUDIO_SUFFIXES = (
+    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus",
+    ".webm", ".amr", ".caf", ".aiff", ".aif", ".wma",
+)
+
+
 def is_image_attachment(original_name: str, content_type: str | None = None) -> bool:
     """True when the attachment should be embedded with ``![alt](path)``.
 
@@ -253,6 +259,18 @@ def is_image_attachment(original_name: str, content_type: str | None = None) -> 
     )
 
 
+def is_audio_attachment(original_name: str, content_type: str | None = None) -> bool:
+    """True when an attachment is a browser-playable recording.
+
+    The check is intentionally extension/MIME based.  Uploads remain byte
+    faithful; decoding and codec validation belong to the local transcription
+    tool rather than the Vault upload path.
+    """
+    if isinstance(content_type, str) and content_type.lower().startswith("audio/"):
+        return True
+    return original_name.lower().split("?", 1)[0].endswith(_AUDIO_SUFFIXES)
+
+
 __all__ = [
     "DEFAULT_ATTACHMENT_BASENAME",
     "DIGEST_SUFFIX_LENGTH",
@@ -260,6 +278,7 @@ __all__ = [
     "MAX_DEDUP_ATTEMPTS",
     "MAX_RELATIVE_PATH_BYTES",
     "clean_attachment_basename",
+    "is_audio_attachment",
     "is_image_attachment",
     "join_attachment_path",
     "normalize_target_directory",

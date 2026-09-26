@@ -28,6 +28,10 @@ export type AttachmentUploadSource = "toolbar" | "editor-drop" | "preview-drop" 
 export type AttachmentErrorCode = "invalid_request" | "invalid_attachment_name" | "not_found" | "already_exists" | "file_too_large" | "path_traversal" | "symlink_escape" | "vault_unavailable" | "vault_not_configured" | string;
 export interface AttachmentUploadError { error: { code: AttachmentErrorCode; message: string; path: string | null }; }
 
+/** Request/response for the local Whisper-compatible transcription route. */
+export interface TranscriptionRequest { path: string; language?: string | null; }
+export interface TranscriptionResponse { path: string; text: string; language: string | null; tool: string; truncated: boolean; }
+
 /**
  * Resolve a Markdown-relative link target against the directory of
  * `notePath` and return a Vault-root-relative POSIX path.
@@ -262,6 +266,65 @@ function replaceInlineWikilinks(line: string): string {
   return parts.join("");
 }
 
+/**
+ * Replace `==highlight==` with `<mark>highlight</mark>` before parsing.
+ *
+ * Highlight has no CommonMark syntax, so the delimiter pair the editor's
+ * highlight command writes is translated here instead of in the renderer.
+ * Fenced blocks and inline code are left untouched, and an empty pair (`====`)
+ * or a lone delimiter is not a highlight at all.
+ */
+export function preprocessHighlights(source: string): string {
+  let fence: string | null = null;
+  return source.split("\n").map((line) => {
+    const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[1]![0]!;
+      fence = fence && fence === marker ? null : fence === null ? marker : fence;
+      return line;
+    }
+    return fence ? line : replaceInlineHighlights(line);
+  }).join("\n");
+}
+
+/**
+ * Pair the `==` delimiters instead of matching a `[^=]+` body, so a highlighted
+ * run may contain `=` and complete inline markup. That is exactly what stacking
+ * formats produces: highlighting a coloured run writes
+ * `==<span style="color:#e5484d">x</span>==`, whose opening tag carries `=`.
+ */
+function replaceInlineHighlights(line: string): string {
+  const pairs: Array<{ open: number; close: number }> = [];
+  const pattern = /==/g;
+  let pending = -1;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(line))) {
+    const at = match.index;
+    // Inside inline code, or inside an HTML tag's attributes, `==` is literal.
+    const ticks = (line.slice(0, at).match(/(?<!`)`(?!`)/g) ?? []).length;
+    if (ticks % 2 === 1 || insideTag(line, at)) continue;
+    if (pending < 0) { pending = at; continue; }
+    // `====` stays an empty pair: the opener simply shifts to the later `==`.
+    if (at === pending + 2) { pending = at; continue; }
+    pairs.push({ open: pending, close: at });
+    pending = -1;
+  }
+  if (!pairs.length) return line;
+  let out = "";
+  let cursor = 0;
+  for (const pair of pairs) {
+    out += line.slice(cursor, pair.open);
+    out += `<mark>${line.slice(pair.open + 2, pair.close)}</mark>`;
+    cursor = pair.close + 2;
+  }
+  return out + line.slice(cursor);
+}
+
+/** True when `at` falls between a `<` and its closing `>` on the same line. */
+function insideTag(line: string, at: number): boolean {
+  return line.lastIndexOf("<", at) > line.lastIndexOf(">", at);
+}
+
 function wikilinkToMarkdown(raw: string): string {
   const parsed = parseWikilink(raw);
   if (parsed.web || parsed.embed) return raw;
@@ -292,12 +355,14 @@ const TASK_LINE_RE = /^([ \t]*(?:[-*+]|\d+[.)])[ \t]+)\[([ xX])\](?=[ \t]|$)/;
 export function taskItems(source: string): TaskItemRef[] {
   const items: TaskItemRef[] = [];
   let offset = 0;
-  let fence: string | null = null;
+  let fence: { marker: string; length: number } | null = null;
   for (const line of source.split("\n")) {
     const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
     if (fenceMatch) {
-      const marker = fenceMatch[1]![0]!;
-      fence = fence && fence === marker ? null : fence === null ? marker : fence;
+      const run = fenceMatch[1]!;
+      const marker = run[0]!;
+      if (fence === null) fence = { marker, length: run.length };
+      else if (fence.marker === marker && run.length >= fence.length) fence = null;
       offset += line.length + 1;
       continue;
     }
@@ -339,7 +404,7 @@ export function markTaskCheckboxes(source: string): string {
   let cursor = 0;
   for (const item of items) {
     out += source.slice(cursor, item.from);
-    out += `<span class="task-toggle" data-task-index="${item.index}" data-task-checked="${item.checked}">${source.slice(item.from, item.to)}</span>`;
+    out += `<span class="task-toggle" role="checkbox" tabindex="0" aria-checked="${item.checked}" data-task-index="${item.index}" data-task-checked="${item.checked}">${source.slice(item.from, item.to)}</span>`;
     cursor = item.to;
   }
   return out + source.slice(cursor);
@@ -387,13 +452,13 @@ export interface SearchHit { path: string; title: string; snippet: string; match
 export interface SearchResponse { query: string; hits: SearchHit[]; total: number; degraded: boolean; skipped_notes: number; generated_at: string; }
 export interface IndexRebuildResponse { indexed: number; skipped: number; failed: number; duration_ms: number; ready: boolean; generated_at: string; }
 export type GraphNodeType = "note" | "tag";
-export type GraphEdgeType = "link" | "backlink" | "tag";
+export type GraphEdgeType = "link" | "backlink" | "tag" | "semantic";
 export type GraphScope = "global" | "local" | "tag";
 export interface GraphNode { id: string; type: GraphNodeType; label: string; path: string | null; title: string | null; tag: string | null; tag_folded: string | null; }
-export interface GraphEdge { id: string; source: string; target: string; type: GraphEdgeType; directed: boolean; raw: string | null; resolved_path: string | null; section: string | null; block: string | null; broken: boolean; ambiguous: boolean; candidates: string[]; context: string | null; }
+export interface GraphEdge { id: string; source: string; target: string; type: GraphEdgeType; directed: boolean; raw: string | null; resolved_path: string | null; section: string | null; block: string | null; broken: boolean; ambiguous: boolean; candidates: string[]; context: string | null; score?: number | null; }
 export interface GraphPage { limit: number; offset: number; next_offset: number | null; total_nodes: number; total_edges: number; truncated: boolean; }
-export interface GraphResponse { model: "note-tag-v1"; scope: GraphScope; root: string | null; nodes: GraphNode[]; edges: GraphEdge[]; page: GraphPage; generated_at: string; }
-export interface GraphQuery { limit?: number; offset?: number; tag?: string | null; include_broken?: boolean; depth?: number; direction?: "both" | "outgoing" | "incoming"; }
+export interface GraphResponse { model: "note-tag-v1"; scope: GraphScope; root: string | null; nodes: GraphNode[]; edges: GraphEdge[]; page: GraphPage; generated_at: string; semantic_status?: "ready" | "unavailable" | "outdated" | "degraded" | "limited"; semantic_covered_nodes?: number; }
+export interface GraphQuery { limit?: number; offset?: number; tag?: string | null; include_broken?: boolean; include_semantic?: boolean; depth?: number; direction?: "both" | "outgoing" | "incoming"; }
 export interface AIContextCitation { path: string; heading: string | null; quote: string; }
 export interface AIChatRequest { note_path?: string | null; question: string; context_note_paths?: string[]; }
 export interface AIChatResponse { answer: string; citations: AIContextCitation[]; prompt_version: string; model: string; degraded: boolean; }
@@ -447,7 +512,7 @@ export type SchedulerRecoveryAction = "diagnose" | "rollback_if_safe" | "retry_p
 export type RagIndexStatusKind = "empty" | "ready" | "pending" | "failed" | "outdated";
 export interface RagSource { id: string; path: string; heading?: string | null; heading_path?: string | null; start_line: number; end_line: number; excerpt: string; score?: number | null; }
 export interface RagSearchHit { /** Server-derived visual binding; optional for pre-visual responses. */ rank?: number; source_id?: string; chunk_id: string; path: string; heading?: string | null; heading_path?: string | null; excerpt: string; score: number; keyword_rank?: number | null; vector_rank?: number | null; link_rank?: number | null; rerank_score?: number | null; start_line: number; end_line: number; }
-export interface RagRetrievalStats { fts_candidates: number; vector_candidates: number; /** Candidates contributed by optional graph/link retrieval. */ link_candidates?: number; fused_candidates: number; reranked: boolean; context_chunks: number; context_tokens: number; retrieval_ms: number; embedding_ms: number; rerank_ms: number; generation_ms: number; degraded: string[]; retrieval_debug?: Record<string, unknown> | null; }
+export interface RagRetrievalStats { fts_candidates: number; vector_candidates: number; /** Candidates contributed by optional graph/link retrieval. */ link_candidates?: number; fused_candidates: number; reranked: boolean; context_chunks: number; context_tokens: number; retrieval_ms: number; embedding_ms: number; rerank_ms: number; generation_ms: number; total_ms?: number; degraded: string[]; retrieval_debug?: Record<string, unknown> | null; }
 export interface RagQueryRequest { query: string; top_k?: number | null; rerank?: boolean | null; debug?: boolean; }
 export interface RagEvidenceSummary { source_count: number; paths?: string[]; context_tokens?: number; candidate_count?: number; truncated?: boolean; grounded?: boolean; degraded?: string[]; }
 export interface RagQueryResponse { query: string; answer: string; sources: RagSource[]; /** Server-derived evidence metadata; absent on older servers. */ evidence?: RagEvidenceSummary; retrieval_stats: RagRetrievalStats; model: string; prompt_version: string; degraded: string[]; invalid_citations: string[]; generated_at: string; }
@@ -462,3 +527,146 @@ export interface RagIndexStatusResponse { enabled: boolean; status: RagIndexStat
  */
 link_retrieval?: string; }
 export interface RagIndexRebuildResponse { indexed_documents: number; indexed_chunks: number; embedded_chunks: number; skipped_documents: number; failed_documents: number; duration_ms: number; ready: boolean; degraded: boolean; degraded_reason?: string | null; status: RagIndexStatusResponse; }
+
+// ---------------------------------------------------------------------------
+// Note export DTO mirror (server source of truth: server/export/schemas.py)
+// ---------------------------------------------------------------------------
+/**
+ * One reference resolved to a Vault file. `url` is the exact string the server
+ * wrote into `markdown`; the client maps it to `data_uri` before rendering, so
+ * the printed document is self-contained without re-resolving paths.
+ */
+export interface ExportAttachmentDTO { ref: string; url: string; path: string; mime: string; size: number; data_uri?: string | null; inlined: boolean; reason?: string | null; }
+export interface ExportWarningDTO { code: string; ref: string; message: string; }
+export interface ExportNoteResponse { path: string; title: string; download_name: string; markdown: string; attachments: ExportAttachmentDTO[]; warnings: ExportWarningDTO[]; inlined_bytes: number; truncated: boolean; service_version: string; generated_at: string; format: "manifest"; }
+
+// ---------------------------------------------------------------------------
+// Document outline (目录视图)
+// ---------------------------------------------------------------------------
+/** One heading of a note. `line` is 0-based so it matches editor line numbers. */
+export interface HeadingEntry {
+  level: number;
+  text: string;
+  line: number;
+}
+
+/** Strip the inline syntax a reader would not want to see in an outline. */
+function outlineText(value: string): string {
+  const codeSpans: string[] = [];
+  return value
+    // Protect code spans: an HTML-looking snippet inside code is still text.
+    .replace(/`([^`]*)`/g, (_match, code: string) => {
+      const index = codeSpans.push(code) - 1;
+      return `\u0000${index}\u0000`;
+    })
+    // A closing ATX sequence is decoration, not text: `## Title ##`.
+    .replace(/\s+#+\s*$/, "")
+    .replace(/!?\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match, target: string, alias?: string) => (alias ?? target).trim())
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|__)(.+?)\1/g, "$2")
+    .replace(/(\*|_)(.+?)\1/g, "$2")
+    // Color formatting is stored as inline HTML. The outline wants its text,
+    // not the `<span style=...>` wrapper.
+    .replace(/<\/?(?:span|font|strong|em|b|i|u|mark)\b[^>]*>/gi, "")
+    .replace(/\u0000(\d+)\u0000/g, (_match, index: string) => codeSpans[Number(index)] ?? "")
+    .trim();
+}
+
+const ATX = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
+const SETEXT = /^ {0,3}(=+|-+)[ \t]*$/;
+const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+
+/**
+ * Headings of a Markdown document, in source order.
+ *
+ * Fenced code blocks and the leading frontmatter block are skipped, so a
+ * `# comment` inside a fence or a `#` in YAML never becomes an outline entry;
+ * both ATX (`## Title`) and setext (`Title` + `===`) headings are recognised.
+ * Empty headings are kept (the panel decides how to label them) because they
+ * still mark a position in the document.
+ */
+export function parseHeadings(source: string): HeadingEntry[] {
+  const headings: HeadingEntry[] = [];
+  const lines = source.split(/\r?\n/);
+  let fence: string | null = null;
+  let index = 0;
+  if (lines[0]?.trim() === "---") {
+    for (index = 1; index < lines.length; index += 1) {
+      const marker = lines[index]!.trim();
+      if (marker === "---" || marker === "...") { index += 1; break; }
+    }
+  }
+  for (; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    const fenceMatch = FENCE.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[1]![0]!;
+      if (fence === null) fence = marker;
+      else if (fence === marker) fence = null;
+      continue;
+    }
+    if (fence !== null) continue;
+    const atx = ATX.exec(line);
+    if (atx) {
+      headings.push({ level: atx[1]!.length, text: outlineText(atx[2] ?? ""), line: index });
+      continue;
+    }
+    // setext: the underline belongs to the line above it.
+    const underline = lines[index + 1] ? SETEXT.exec(lines[index + 1]!) : null;
+    if (underline && line.trim()) {
+      headings.push({ level: underline[1]!.startsWith("=") ? 1 : 2, text: outlineText(line), line: index });
+      index += 1;
+    }
+  }
+  return headings;
+}
+
+/** A heading positioned in the outline tree. */
+export interface OutlineNode {
+  heading: HeadingEntry;
+  /** Index of this heading in the flat `parseHeadings` result. */
+  index: number;
+  /**
+   * Identity of the node inside the tree — the path of child indices
+   * (`"1"`, `"1.0"`, `"1.0.2"`), not the source line. Typing above a section
+   * must not move its collapse state; only inserting or removing a heading
+   * before it can.
+   */
+  key: string;
+  children: OutlineNode[];
+}
+
+/**
+ * Nest headings by level: each heading becomes a child of the nearest heading
+ * above it with a smaller level, so `# A` / `## B` / `### C` / `## D` yields
+ * A → [B → [C], D]. A level jump (`# A` then `### C`) simply nests deeper.
+ */
+export function buildOutlineTree(headings: HeadingEntry[]): OutlineNode[] {
+  const roots: OutlineNode[] = [];
+  const stack: OutlineNode[] = [];
+  for (let index = 0; index < headings.length; index += 1) {
+    const heading = headings[index]!;
+    const node: OutlineNode = { heading, index, key: "", children: [] };
+    while (stack.length && stack[stack.length - 1]!.heading.level >= heading.level) stack.pop();
+    const parent = stack[stack.length - 1];
+    if (parent) {
+      node.key = `${parent.key}.${parent.children.length}`;
+      parent.children.push(node);
+    } else {
+      node.key = String(roots.length);
+      roots.push(node);
+    }
+    stack.push(node);
+  }
+  return roots;
+}
+
+/** The node holding flat heading `index`, or `null` when the tree is empty. */
+export function findOutlineNode(nodes: OutlineNode[], index: number): OutlineNode | null {
+  for (const node of nodes) {
+    if (node.index === index) return node;
+    const nested = findOutlineNode(node.children, index);
+    if (nested) return nested;
+  }
+  return null;
+}

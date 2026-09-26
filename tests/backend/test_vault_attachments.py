@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 
 import pytest
-from tests.backend.client import TestClient
 
 from server.vault import atomic_write as atomic_write_module
 from server.vault.attachments import (
@@ -25,6 +24,7 @@ from server.vault.attachments import (
 )
 from server.vault.errors import AlreadyExists, FileTooLarge, InvalidRequest
 from server.vault.service import VaultService
+from tests.backend.client import TestClient
 
 API = "/api/v1/vault/attachments"
 RESOURCE = "/api/v1/vault/resource"
@@ -438,6 +438,30 @@ def test_resource_returns_raw_bytes_with_headers(
     # The header must stay latin-1 encodable (RFC 5987 filename*).
     response.headers["content-disposition"].encode("latin-1")
     assert "%E5%9B%BE%E7%89%87" in response.headers["content-disposition"]
+
+
+def test_resource_supports_audio_mime_and_single_ranges(
+    vault_fixture_copy: Path, vault_service_factory: object, vault_api_client: object
+) -> None:
+    client = _client(vault_fixture_copy, vault_service_factory, vault_api_client)
+    created = _post(client, "recording.m4a", "notes", b"0123456789")
+    path = created.json()["path"]
+
+    response = client.get(RESOURCE, params={"path": path}, headers={"Range": "bytes=2-5"})
+    assert response.status_code == 206
+    assert response.content == b"2345"
+    assert response.headers["content-type"].startswith("audio/mp4")
+    assert response.headers["content-range"] == "bytes 2-5/10"
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["content-length"] == "4"
+
+    suffix = client.get(RESOURCE, params={"path": path}, headers={"Range": "bytes=-3"})
+    assert suffix.status_code == 206
+    assert suffix.content == b"789"
+
+    invalid = client.get(RESOURCE, params={"path": path}, headers={"Range": "bytes=99-"})
+    assert invalid.status_code == 416
+    assert invalid.headers["content-range"] == "bytes */10"
 
 
 def test_resource_rejects_unsafe_and_missing_paths(

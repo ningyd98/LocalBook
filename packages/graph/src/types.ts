@@ -21,6 +21,7 @@ export interface GraphEdgeAttrs {
   candidates: string[];
   section: string | null;
   block: string | null;
+  score?: number | null;
 }
 
 /** Result of clicking an interactive element. */

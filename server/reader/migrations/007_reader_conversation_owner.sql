@@ -1,0 +1,3 @@
+-- Bind Reader AI conversations to their paired device.
+-- ReaderDatabase applies this migration conditionally so a partially upgraded
+-- database can resume without losing existing conversations.

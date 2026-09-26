@@ -83,6 +83,21 @@ describe("SigmaGraph fallback (jsdom has no WebGL)", () => {
     await userEvent.click(tagButton);
     expect(onNodeClick).toHaveBeenLastCalledWith(expect.objectContaining({ type: "tag", tag: "工作" }));
   });
+
+  it("lists content similarity suggestions with their scores when WebGL is unavailable", async () => {
+    const source = response();
+    render(<SigmaGraph
+      response={{
+        ...source,
+        edges: [{ ...source.edges[0]!, id: "similar:a:b", type: "semantic", directed: false, score: 0.91 }],
+      }}
+      theme="light"
+    />);
+    const relations = await screen.findByRole("list", { name: "Graph relations" });
+    expect(relations).toHaveTextContent("A");
+    expect(relations).toHaveTextContent("Ref B");
+    expect(relations).toHaveTextContent("91%");
+  });
 });
 
 describe("SigmaGraph renderer lifecycle (mocked WebGL + renderer)", () => {
@@ -98,6 +113,8 @@ describe("SigmaGraph renderer lifecycle (mocked WebGL + renderer)", () => {
     // 3 nodes added; dangling broken edge skipped -> 2 edges
     expect(graph.order).toBe(3);
     expect(graph.size).toBe(2);
+    const edgeReducer = constructorOptions?.edgeReducer as (id: string, attrs: Record<string, unknown>) => { size: number };
+    expect(edgeReducer("e1", { kind: "link" }).size).toBeGreaterThanOrEqual(2);
 
     listeners["clickNode"]?.({ node: "note:b" });
     expect(onNodeClick).toHaveBeenCalledWith(expect.objectContaining({ path: "notes/Ref B.md" }));
@@ -118,5 +135,16 @@ describe("SigmaGraph renderer lifecycle (mocked WebGL + renderer)", () => {
     render(<SigmaGraph response={response()} theme="light" onNodeClick={vi.fn()} loadRenderer={brokenLoader} />);
     await screen.findByText(/Interactive graph could not start: context creation failed/);
     expect(screen.getByRole("region", { name: /Graph fallback view/ })).toBeTruthy();
+  });
+
+  it("does not render every label at once in a large graph", async () => {
+    fakeWebGL();
+    const source = response();
+    const manyNodes = Array.from({ length: 120 }, (_, index) => ({
+      ...source.nodes[0]!, id: `note:${index}`, label: `Note ${index}`,
+    }));
+    render(<SigmaGraph response={{ ...source, nodes: manyNodes, edges: [] }} theme="light" loadRenderer={rendererLoader} />);
+    await waitFor(() => expect(constructedGraphs.length).toBe(1));
+    expect(Number(constructorOptions?.labelRenderedSizeThreshold)).toBeGreaterThan(0);
   });
 });

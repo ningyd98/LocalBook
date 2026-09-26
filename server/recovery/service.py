@@ -63,7 +63,7 @@ class RecoveryService:
             code = getattr(exc, "code", None)
             if code is not None and code.value == "not_found":
                 return None
-            return None  # unreadable -> treated as not verifiable (None)
+            raise
 
     def diagnose(self, job_id: str) -> JobDiagnosis:
         """Read-only diagnosis of one uncertain job (never writes)."""
@@ -165,7 +165,13 @@ class RecoveryService:
         applied: list[tuple[JournalEntry, str]] = []
         conflict_paths: list[str] = []
         for entry in executable:
-            current = self._current_hash(entry.path)
+            try:
+                current = self._current_hash(entry.path)
+            except Exception:
+                # An unreadable file cannot be classified as untouched or
+                # ours. Abort the preflight before restoring any path.
+                conflict_paths.append(entry.path)
+                continue
             if entry.after_hash is not None and current == entry.after_hash:
                 applied.append((entry, entry.after_hash))
             elif current is None or current == entry.before_hash:

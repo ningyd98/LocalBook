@@ -39,8 +39,7 @@ _PROFILE_SAVED_FIELDS = ("id", "name", *_PROFILE_FIELDS)
 def _profile_patch(ai: AISettings) -> dict[str, Any]:
     """The profile fields of a flat AI configuration, ready for ``model_copy``."""
     return {
-        field: getattr(ai, "provider" if field == "kind" else field)
-        for field in _PROFILE_FIELDS
+        field: getattr(ai, "provider" if field == "kind" else field) for field in _PROFILE_FIELDS
     }
 
 
@@ -56,14 +55,41 @@ def validate_endpoint(value: str | None) -> str | None:
         return None
     try:
         url = urlsplit(text)
-        valid = (url.scheme in {"http", "https"} and url.hostname and
-                 not url.username and not url.password and not url.query and not url.fragment)
+        valid = (
+            url.scheme in {"http", "https"}
+            and url.hostname
+            and not url.username
+            and not url.password
+            and not url.query
+            and not url.fragment
+        )
         _ = url.port
     except ValueError:
         valid = False
     if not valid:
-        raise SettingsError("invalid_ai_endpoint", "Use an HTTP(S) service URL without credentials or query parameters.", 422)
+        raise SettingsError(
+            "invalid_ai_endpoint",
+            "Use an HTTP(S) service URL without credentials or query parameters.",
+            422,
+        )
     return text
+
+
+def _load_rag(stored: RagSettings, raw: object) -> RagSettings:
+    """Merge a saved ``rag`` section over the environment-provided defaults.
+
+    A corrupt or unreadable RAG section degrades to the defaults instead of
+    raising: RAG is a derived, optional subsystem, and it must never be able to
+    block startup — unlike a broken ``ai`` section, which strands the whole app.
+    The environment still wins for anything the file omits (``LOCALNOTE_RAG__*``).
+    """
+    if not isinstance(raw, dict):
+        return stored
+    try:
+        return RagSettings.model_validate({**stored.model_dump(), **raw})
+    except Exception:
+        log.warning("Saved RAG settings are unreadable; falling back to defaults")
+        return stored
 
 
 class ConfigRepository:
@@ -73,9 +99,17 @@ class ConfigRepository:
     @classmethod
     def for_settings(cls, settings: Settings, *, isolated: bool = False):
         override = os.environ.get("LOCALNOTE_SETTINGS_FILE")
-        path = Path(override).expanduser() if override else (
-            None if isolated else Path.home() / ".config/localnote/instances" /
-            f"{settings.server.host}-{settings.server.port}" / "settings.json"
+        path = (
+            Path(override).expanduser()
+            if override
+            else (
+                None
+                if isolated
+                else Path.home()
+                / ".config/localnote/instances"
+                / f"{settings.server.host}-{settings.server.port}"
+                / "settings.json"
+            )
         )
         return cls(path)
 
@@ -86,12 +120,26 @@ class ConfigRepository:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             ai = AISettings.model_validate({**settings.ai.model_dump(), **data["ai"]})
             ai.base_url = validate_endpoint(ai.base_url)
-            vault = settings.vault.model_copy(update={"root": Path(data["vault_root"]) if data.get("vault_root") else None})
-            return settings.model_copy(update={"ai": ai, "vault": vault}), max(1, int(data["revision"]))
+            # Environment variable LOCALNOTE_VAULT_ROOT takes precedence over saved config
+            vault_root_override = os.environ.get("LOCALNOTE_VAULT_ROOT")
+            if vault_root_override:
+                vault = settings.vault.model_copy(update={"root": Path(vault_root_override)})
+            else:
+                vault = settings.vault.model_copy(
+                    update={"root": Path(data["vault_root"]) if data.get("vault_root") else None}
+                )
+            return settings.model_copy(
+                update={"ai": ai, "vault": vault, "rag": _load_rag(settings.rag, data.get("rag"))}
+            ), max(1, int(data["revision"]))
         except SettingsError:
             raise
         except Exception as exc:
-            raise SettingsError("settings_unreadable", "Saved configuration cannot be read. Restore the configuration file before starting.", 503) from exc
+            raise SettingsError(
+                "settings_unreadable",
+                "Saved configuration cannot be read. Restore the configuration file "
+                "before starting.",
+                503,
+            ) from exc
 
     def save(self, settings: Settings, revision: int):
         if self.path is None:
@@ -108,8 +156,18 @@ class ConfigRepository:
                 profile.model_dump(include=set(_PROFILE_SAVED_FIELDS))
                 for profile in settings.ai.profiles
             ]
-        data = {"revision": revision, "vault_root": str(settings.vault.root) if settings.vault.root else None,
-                "ai": ai}
+        data = {
+            "revision": revision,
+            "vault_root": str(settings.vault.root) if settings.vault.root else None,
+            "ai": ai,
+        }
+        # RAG is written only once it leaves its defaults, for the same reason as
+        # the provider library above: an installation that never touched RAG keeps
+        # the legacy file shape. Without this the whole RAG section — reranker
+        # endpoint, model and API key included — lived in memory only and was
+        # silently reset to defaults by the next restart.
+        if settings.rag != RagSettings():
+            data["rag"] = settings.rag.model_dump()
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fd, temporary = tempfile.mkstemp(prefix=".settings-", dir=self.path.parent)
         try:
@@ -136,7 +194,12 @@ class ConfigRepository:
 
 class Runtime:
     def __init__(self, app: Any, settings: Settings, repository: ConfigRepository, revision: int):
-        self.app, self.settings, self.repository, self.revision = app, settings, repository, revision
+        self.app, self.settings, self.repository, self.revision = (
+            app,
+            settings,
+            repository,
+            revision,
+        )
         self.session_id = uuid.uuid4().hex
         self.lock = threading.RLock()
         self.changing = False
@@ -144,6 +207,7 @@ class Runtime:
         self.lifecycle: VaultLifecycle | None = None
         self.scheduler: Any = None
         self.agent: Any = None
+        self.bonjour: Any = None
 
     def _services(self, settings: Settings, lifecycle: VaultLifecycle):
         from .api.dependencies import (
@@ -151,21 +215,37 @@ class Runtime:
             _history_from_index,
             build_scheduler_service,
         )
+
         history = _history_from_index(lifecycle.index_service)
         vault = lifecycle.service
-        agent = _agent_service_from(settings, vault, lifecycle.index_service, history) if vault else None
-        scheduler = build_scheduler_service(settings, vault=vault, index=lifecycle.index_service, agent_service=agent, history=history)
+        agent = (
+            _agent_service_from(settings, vault, lifecycle.index_service, history)
+            if vault
+            else None
+        )
+        scheduler = build_scheduler_service(
+            settings,
+            vault=vault,
+            index=lifecycle.index_service,
+            agent_service=agent,
+            history=history,
+        )
         return agent, scheduler
 
     def _publish(self):
         state = self.app.state
         state.settings = self.settings
+        # Reader binds database, AI workflow, search index, and importer to the
+        # current settings/Vault lifecycle. Rebuild lazily after every publish.
+        if hasattr(state, "reader_service"):
+            delattr(state, "reader_service")
         for name, value in {
             "vault_lifecycle": self.lifecycle,
             "vault_service": self.lifecycle.service if self.lifecycle else None,
             "index_service": self.lifecycle.index_service if self.lifecycle else None,
             "rag_stack": self.lifecycle.rag_stack if self.lifecycle else None,
-            "agent_job_service": self.agent, "scheduler_service": self.scheduler,
+            "agent_job_service": self.agent,
+            "scheduler_service": self.scheduler,
         }.items():
             if value is not None:
                 setattr(state, name, value)
@@ -179,18 +259,44 @@ class Runtime:
             rag=self.settings.rag,
             note_text_cap=self.settings.index.note_text_cap,
         )
-        self.lifecycle.startup()
+        # Large Vault scans must not hold the ASGI lifespan before the HTTP
+        # listener is available. The watcher is attached before the scan and
+        # serializes arriving events with the background index transaction.
+        self.lifecycle.startup(background_index=True)
         self.agent, self.scheduler = self._services(self.settings, self.lifecycle)
         self._publish()
         self.scheduler.scan_recovery(mark=True)
+
+        # Advertise only when the HTTP listener is reachable from the LAN. A
+        # loopback-only server must not publish an address that remote Reader
+        # clients cannot connect to.
+        if self.settings.server.host not in {"127.0.0.1", "localhost", "::1"}:
+            try:
+                from .discovery import BonjourService
+
+                self.bonjour = BonjourService()
+                self.bonjour.start(
+                    port=self.settings.server.port,
+                    version=getattr(self.app, "version", "1.3.0"),
+                )
+            except Exception:
+                self.bonjour = None
+                log.exception("Bonjour advertisement startup degraded")
         try:
             self.scheduler.start()
         except Exception:
             log.exception("scheduler startup degraded")
         if self.scheduler.network_warning():
             log.warning("API is listening outside loopback without authentication or HTTPS")
+        # Start the expensive full scan only after scheduler recovery and
+        # initialization have finished using the shared derived database.
+        if self.lifecycle is not None:
+            self.lifecycle.start_background_index()
 
     def shutdown(self):
+        if self.bonjour:
+            self.bonjour.stop()
+            self.bonjour = None
         if self.scheduler:
             self.scheduler.stop(wait=True, timeout=3)
         if self.lifecycle:
@@ -200,50 +306,72 @@ class Runtime:
         """Wire view of the provider library: never carries a key, only its presence."""
         views: list[dict[str, Any]] = []
         for profile in self.settings.ai.synthesized_profiles():
-            views.append({
-                "id": profile.id,
-                "name": profile.display_name,
-                "kind": profile.kind,
-                "base_url": profile.base_url,
-                "chat_model": profile.chat_model,
-                "temperature": profile.temperature,
-                "max_output_tokens": profile.max_output_tokens,
-                "request_timeout_seconds": profile.request_timeout_seconds,
-                "connect_timeout_seconds": profile.connect_timeout_seconds,
-                "max_models_response_bytes": profile.max_models_response_bytes,
-                "api_key_set": bool(profile.api_key),
-                "builtin": profile.builtin,
-                "source": profile.source,
-                "from_env": profile.from_env,
-                "is_active": profile.id == self.settings.ai.active_profile_id,
-            })
+            views.append(
+                {
+                    "id": profile.id,
+                    "name": profile.display_name,
+                    "kind": profile.kind,
+                    "base_url": profile.base_url,
+                    "chat_model": profile.chat_model,
+                    "temperature": profile.temperature,
+                    "max_output_tokens": profile.max_output_tokens,
+                    "request_timeout_seconds": profile.request_timeout_seconds,
+                    "connect_timeout_seconds": profile.connect_timeout_seconds,
+                    "max_models_response_bytes": profile.max_models_response_bytes,
+                    "api_key_set": bool(profile.api_key),
+                    "builtin": profile.builtin,
+                    "source": profile.source,
+                    "from_env": profile.from_env,
+                    "is_active": profile.id == self.settings.ai.active_profile_id,
+                }
+            )
         return views
 
     def snapshot(self):
         with self.lock:
             applied = self.settings.ai.effective_profile()
-            return {"revision": self.revision, "vault_session_id": self.session_id,
-                    "changing": self.changing, "version": self.app.version,
-                    "vault": {"root": str(self.settings.vault.root) if self.settings.vault.root else None,
-                              "status": "ready" if self.lifecycle and self.lifecycle.service else
-                              "not_configured" if not self.settings.vault.root else "unavailable"},
-                    # The API key is never echoed back; only whether one is stored.
-                    "ai": {**{k: getattr(self.settings.ai, k)
-                              for k in ("enabled", "base_url", "chat_model")},
-                           "active_profile_id": applied.id,
-                           "profiles": self._profile_views(),
-                           "api_key_set": bool(self.settings.ai.api_key)},
-                    "rag": self.settings.rag.snapshot_view()}
+            return {
+                "revision": self.revision,
+                "vault_session_id": self.session_id,
+                "changing": self.changing,
+                "version": self.app.version,
+                "vault": {
+                    "root": str(self.settings.vault.root) if self.settings.vault.root else None,
+                    "status": "ready"
+                    if self.lifecycle and self.lifecycle.service
+                    else "not_configured"
+                    if not self.settings.vault.root
+                    else "unavailable",
+                },
+                # The API key is never echoed back; only whether one is stored.
+                "ai": {
+                    **{
+                        k: getattr(self.settings.ai, k)
+                        for k in ("enabled", "base_url", "chat_model")
+                    },
+                    "active_profile_id": applied.id,
+                    "profiles": self._profile_views(),
+                    "api_key_set": bool(self.settings.ai.api_key),
+                },
+                "rag": self.settings.rag.snapshot_view(),
+            }
 
     @contextmanager
     def request(self, session: str | None, *, write: bool):
         with self.lock:
             if self.changing:
-                raise SettingsError("workspace_switching", "The workspace is switching. Please retry shortly.", 503)
+                raise SettingsError(
+                    "workspace_switching", "The workspace is switching. Please retry shortly.", 503
+                )
             if write and not session:
-                raise SettingsError("vault_session_required", "Refresh the workspace before making changes.", 428)
+                raise SettingsError(
+                    "vault_session_required", "Refresh the workspace before making changes.", 428
+                )
             if session and session != self.session_id:
-                raise SettingsError("vault_session_changed", "The vault changed in another page. Your local draft has been preserved.")
+                raise SettingsError(
+                    "vault_session_changed",
+                    "The vault changed in another page. Your local draft has been preserved.",
+                )
             self.in_flight += 1
         try:
             yield
@@ -255,13 +383,23 @@ class Runtime:
     def transition(self, revision: int, session: str | None = None):
         with self.lock:
             if self.changing or self.in_flight:
-                raise SettingsError("runtime_busy", "A request or task is running. Please retry when it finishes.")
+                raise SettingsError(
+                    "runtime_busy", "A request or task is running. Please retry when it finishes."
+                )
             if revision != self.revision:
-                raise SettingsError("settings_conflict", "Settings changed in another page. Reload the current settings.")
+                raise SettingsError(
+                    "settings_conflict",
+                    "Settings changed in another page. Reload the current settings.",
+                )
             if session is not None and session != self.session_id:
-                raise SettingsError("vault_session_changed", "The active vault has changed. Reload settings.")
+                raise SettingsError(
+                    "vault_session_changed", "The active vault has changed. Reload settings."
+                )
             if self.scheduler and not self.scheduler.pause_for_reconfigure():
-                raise SettingsError("runtime_busy", "A background task is still running. Please retry when it finishes.")
+                raise SettingsError(
+                    "runtime_busy",
+                    "A background task is still running. Please retry when it finishes.",
+                )
             self.changing = True
         try:
             yield
@@ -294,7 +432,9 @@ class Runtime:
         with self.transition(revision):
             updated = self.settings.model_copy(update={"ai": ai})
             if self.lifecycle is None:
-                raise SettingsError("runtime_unavailable", "Application startup is not complete.", 503)
+                raise SettingsError(
+                    "runtime_unavailable", "Application startup is not complete.", 503
+                )
             old = self.scheduler
             scheduler = None
             try:
@@ -305,7 +445,11 @@ class Runtime:
             except Exception as exc:
                 if scheduler:
                     scheduler.stop()
-                raise SettingsError("settings_apply_failed", "Configuration could not be applied. Previous settings are retained.", 500) from exc
+                raise SettingsError(
+                    "settings_apply_failed",
+                    "Configuration could not be applied. Previous settings are retained.",
+                    500,
+                ) from exc
             self.settings, self.agent, self.scheduler = updated, agent, scheduler
             self.revision += 1
             self._publish()
@@ -348,7 +492,9 @@ class Runtime:
         with self.transition(revision):
             updated_settings = self.settings.model_copy(update={"rag": updated})
             if self.lifecycle is None:
-                raise SettingsError("runtime_unavailable", "Application startup is not complete.", 503)
+                raise SettingsError(
+                    "runtime_unavailable", "Application startup is not complete.", 503
+                )
             try:
                 self.lifecycle.reconfigure_rag(updated)
                 self.repository.save(updated_settings, self.revision + 1)
@@ -423,14 +569,28 @@ class Runtime:
     def switch_vault(self, root: str, revision: int, session: str):
         target = Path(root).expanduser()
         if not target.is_absolute() or not target.is_dir() or target.is_symlink():
-            raise SettingsError("invalid_vault_root", "Choose an existing absolute directory, not a symbolic link.", 422)
+            raise SettingsError(
+                "invalid_vault_root",
+                "Choose an existing absolute directory, not a symbolic link.",
+                422,
+            )
         target = target.resolve()
         with self.transition(revision, session):
             if self.settings.vault.root and target == self.settings.vault.root.resolve():
                 return {**self.snapshot(), "changing": False}
+            if self.lifecycle is not None and self.lifecycle.index_building:
+                raise SettingsError(
+                    "index_building",
+                    "The current Vault is still being indexed. Retry the switch after it finishes.",
+                    503,
+                )
             if self.repository.path and self.repository.path.resolve().is_relative_to(target):
-                raise SettingsError("invalid_vault_root", "Configuration must remain outside the vault.", 422)
-            updated = self.settings.model_copy(update={"vault": self.settings.vault.model_copy(update={"root": target})})
+                raise SettingsError(
+                    "invalid_vault_root", "Configuration must remain outside the vault.", 422
+                )
+            updated = self.settings.model_copy(
+                update={"vault": self.settings.vault.model_copy(update={"root": target})}
+            )
             candidate = VaultLifecycle(
                 updated.vault,
                 index=updated.index,
@@ -440,8 +600,16 @@ class Runtime:
             scheduler = None
             try:
                 candidate.startup(start_watcher=False)
-                if not candidate.service or not candidate.index_service or candidate.index_service.build_state != "ready":
-                    raise SettingsError("vault_prepare_failed", "The new vault or its index could not be initialized.", 422)
+                if (
+                    not candidate.service
+                    or not candidate.index_service
+                    or candidate.index_service.build_state != "ready"
+                ):
+                    raise SettingsError(
+                        "vault_prepare_failed",
+                        "The new vault or its index could not be initialized.",
+                        422,
+                    )
                 agent, scheduler = self._services(updated, candidate)
                 scheduler.scan_recovery(mark=True)
                 scheduler.pause_for_reconfigure()
@@ -454,9 +622,18 @@ class Runtime:
                 candidate.shutdown()
                 if isinstance(exc, SettingsError):
                     raise
-                raise SettingsError("vault_switch_failed", "Switch failed. The previous vault and configuration are retained.", 500) from exc
+                raise SettingsError(
+                    "vault_switch_failed",
+                    "Switch failed. The previous vault and configuration are retained.",
+                    500,
+                ) from exc
             previous, previous_scheduler = self.lifecycle, self.scheduler
-            self.settings, self.lifecycle, self.agent, self.scheduler = updated, candidate, agent, scheduler
+            self.settings, self.lifecycle, self.agent, self.scheduler = (
+                updated,
+                candidate,
+                agent,
+                scheduler,
+            )
             self.session_id = uuid.uuid4().hex
             self.revision += 1
             self._publish()

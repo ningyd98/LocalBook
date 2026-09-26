@@ -41,6 +41,11 @@ const messages: Record<string, string> = {
   path_traversal: "目标路径不安全，已拒绝上传。",
   symlink_escape: "目标目录是符号链接，已拒绝上传。",
   invalid_name: "文件名无效，请检查后重试。",
+  transcription_disabled: "本地转写功能已关闭。",
+  transcription_unavailable: "本地转写工具不可用，请安装 Whisper 或配置命令。",
+  transcription_failed: "本地转写失败，请检查录音格式与工具输出。",
+  transcription_timeout: "本地转写超时，请缩短录音或调大超时时间。",
+  not_audio: "所选文件不是录音文件。",
 };
 export function localizedError(error: unknown, locale: string): string {
   const value = error as { code?: string; message?: string; status?: number; endpoint?: string } | null;

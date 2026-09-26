@@ -3,7 +3,7 @@ import type { DragEvent } from "react";
 import { useI18n } from "../i18n";
 
 /** Present frontmatter separately; the editor remains the sole owner of source bytes. */
-export function PreviewPane({ source, notePath, resolveResourceUrl, onDropFiles, attachmentBusy = false, disabled = false, wikilinkExists, onOpenWikilink, onToggleTask, onContextMenuAt }: { source: string; notePath?: string | null; resolveResourceUrl?: (path: string) => string; onDropFiles?: (files: File[]) => void; attachmentBusy?: boolean; disabled?: boolean; wikilinkExists?: (target: string) => boolean; onOpenWikilink?: (target: string) => void; onToggleTask?: (index: number) => void; /** Right-click on the preview surface (nested-document menu). */ onContextMenuAt?: (path: string, x: number, y: number) => void }) {
+export function PreviewPane({ source, notePath, resolveResourceUrl, resolveDocumentPreviewUrl, onDropFiles, attachmentBusy = false, disabled = false, wikilinkExists, onOpenWikilink, onToggleTask, onTranscribeAudio, onContextMenuAt }: { source: string; notePath?: string | null; resolveResourceUrl?: (path: string) => string; resolveDocumentPreviewUrl?: (path: string) => string; onDropFiles?: (files: File[]) => void; attachmentBusy?: boolean; disabled?: boolean; wikilinkExists?: (target: string) => boolean; onOpenWikilink?: (target: string) => void; onToggleTask?: (index: number) => void; onTranscribeAudio?: (path: string) => void; /** Right-click on the preview surface (nested-document menu). */ onContextMenuAt?: (path: string, x: number, y: number) => void }) {
   const { tr } = useI18n();
   const frontmatter = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)(?:\r?\n|$)/.exec(source);
   const acceptDrop = Boolean(onDropFiles) && !disabled;
@@ -18,10 +18,12 @@ export function PreviewPane({ source, notePath, resolveResourceUrl, onDropFiles,
       source={frontmatter ? source.slice(frontmatter[0].length) : source}
       notePath={notePath}
       resolveResourceUrl={resolveResourceUrl}
+       resolveDocumentPreviewUrl={resolveDocumentPreviewUrl}
       busy={attachmentBusy}
       wikilinkExists={wikilinkExists}
       onOpenWikilink={onOpenWikilink}
       onToggleTask={onToggleTask}
+      onTranscribeAudio={onTranscribeAudio}
       onDropFiles={acceptDrop ? onDropFiles : undefined}
       onDragOver={acceptDrop ? (event: DragEvent<HTMLElement>) => { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = "copy"; } : undefined}
     />

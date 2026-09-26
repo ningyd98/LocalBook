@@ -79,6 +79,7 @@ class RagRetrievalStats(_StrictModel):
     embedding_ms: float = 0.0
     rerank_ms: float = 0.0
     generation_ms: float = 0.0
+    total_ms: float = 0.0
     degraded: list[str] = Field(default_factory=list)
     retrieval_debug: dict | None = None
 

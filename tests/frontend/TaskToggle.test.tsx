@@ -3,7 +3,7 @@
  * in the preview and in the live-preview editor; one click flips the marker in
  * the source (which keeps the byte-faithful save path untouched).
  */
-import { fireEvent, waitFor } from "@testing-library/react";
+import { fireEvent, waitFor, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "./render";
@@ -65,7 +65,7 @@ describe("task source helpers", () => {
 describe("rendered preview checkboxes", () => {
   it("renders a clickable span that keeps the checked state", () => {
     const html = renderMarkdown(withLines("- [ ] open", "- [x] done"));
-    expect(html).toContain('class="task-toggle"');
+    expect(html).toContain('class="task-toggle" role="checkbox" tabindex="0" aria-checked="false"');
     expect(html).toContain('data-task-index="1"');
     expect(html).toContain('data-task-checked="true"');
     // Never a disabled native checkbox: the preview owns the interaction.
@@ -79,6 +79,16 @@ describe("rendered preview checkboxes", () => {
     expect(boxes).toHaveLength(2);
     await userEvent.click(boxes[1] as HTMLElement);
     expect(onToggleTask).toHaveBeenCalledWith(1);
+  });
+
+  it("exposes a keyboard-operable checkbox and toggles on Space", async () => {
+    const onToggleTask = vi.fn();
+    render(<Preview source={withLines("- [ ] open")} onToggleTask={onToggleTask} />);
+    const checkbox = screen.getByRole("checkbox");
+    expect(checkbox).toHaveAttribute("tabindex", "0");
+    checkbox.focus();
+    await userEvent.keyboard(" ");
+    expect(onToggleTask).toHaveBeenCalledWith(0);
   });
 
   it("does not intercept clicks when no handler is supplied", async () => {

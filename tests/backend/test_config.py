@@ -80,7 +80,7 @@ def test_vault_defaults_are_inert_and_do_not_touch_filesystem() -> None:
     assert vault.root is None
     assert vault.watcher_enabled is True
     assert vault.watcher_debounce_ms == 200
-    assert vault.max_file_bytes == 50 * 1024 * 1024
+    assert vault.max_file_bytes == 200 * 1024 * 1024
     # Construction must never scan, create or probe any directory.
     assert VaultSettings(root=None).root is None
 

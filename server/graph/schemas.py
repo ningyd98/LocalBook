@@ -13,7 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 GraphNodeType = Literal["note", "tag"]
-GraphEdgeType = Literal["link", "backlink", "tag"]
+GraphEdgeType = Literal["link", "backlink", "tag", "semantic"]
 GraphScope = Literal["global", "local", "tag"]
 
 
@@ -36,6 +36,7 @@ class GraphEdge(BaseModel):
     source: str
     target: str  # empty only for broken/dangling edges with no target node
     type: GraphEdgeType
+    score: float | None = None
     directed: bool = True
     raw: str | None = None
     resolved_path: str | None = None
@@ -68,6 +69,10 @@ class GraphResponse(BaseModel):
     edges: list[GraphEdge]
     page: GraphPage
     generated_at: datetime
+    semantic_status: Literal["ready", "unavailable", "outdated", "degraded", "limited"] = (
+        "unavailable"
+    )
+    semantic_covered_nodes: int = 0
 
 
 __all__ = [

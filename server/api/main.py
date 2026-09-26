@@ -16,12 +16,19 @@ from fastapi.responses import JSONResponse
 from .. import __version__
 from ..ai.errors import AIError
 from ..config import Settings
+from ..documents.errors import DocumentPreviewError
+from ..export.errors import ExportError
 from ..policies.errors import M7Error
+from ..rag.errors import RagError
+from ..reader.errors import ReaderError
+from ..reader.router import router as reader_router
 from ..runtime import SESSION_HEADER, ConfigRepository, Runtime, SettingsError
 from ..scheduler.errors import SchedulerError
-from ..rag.errors import RagError, RagInvalidRequest
+from ..transcription.errors import TranscriptionError
 from ..vault.errors import VaultError, VaultErrorCode
 from .routes import ai as ai_routes
+from .routes import documents as document_routes
+from .routes import export as export_routes
 from .routes import graph as graph_routes
 from .routes import health as health_routes
 from .routes import history as history_routes
@@ -33,6 +40,7 @@ from .routes import rag as rag_routes
 from .routes import scheduler as scheduler_routes
 from .routes import search as search_routes
 from .routes import settings as settings_routes
+from .routes import transcription as transcription_routes
 from .routes import trash as trash_routes
 from .routes import vault as vault_routes
 
@@ -63,8 +71,10 @@ def _validation_error_payload(exc: RequestValidationError) -> tuple[int, dict[st
         for token in ("unsafe", "root-relative", "traversal", "drive", "unc", "separator")
     )
     if path_related and traversal_related:
-        status_code, code, message = 400, VaultErrorCode.PATH_TRAVERSAL.value, (
-            "Path must be a safe root-relative POSIX path"
+        status_code, code, message = (
+            400,
+            VaultErrorCode.PATH_TRAVERSAL.value,
+            ("Path must be a safe root-relative POSIX path"),
         )
     elif hash_content_related or any(token in joined for token in ("digest", "base64")):
         status_code, code, message = 400, VaultErrorCode.INVALID_REQUEST.value, "Invalid request"
@@ -157,6 +167,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ai_routes.router)
     app.include_router(vault_routes.router)
     app.include_router(trash_routes.router)
+    app.include_router(transcription_routes.router)
+    app.include_router(document_routes.router)
+    app.include_router(export_routes.router)
     app.include_router(metadata_routes.router)
     app.include_router(links_routes.router)
     app.include_router(search_routes.router)
@@ -167,20 +180,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(scheduler_routes.router)
     app.include_router(rag_routes.router)
     app.include_router(settings_routes.router)
+    app.include_router(reader_router)
 
     @app.middleware("http")
     async def log_requests(request: Request, call_next):  # type: ignore[no-untyped-def]
         start = time.perf_counter()
         path = request.url.path
-        scoped = path.startswith("/api/v1/") and path not in {"/api/v1/health", "/api/v1/ai/status"} and not path.startswith("/api/v1/settings")
+        scoped = (
+            path.startswith("/api/v1/")
+            and path not in {"/api/v1/health", "/api/v1/ai/status"}
+            and not path.startswith("/api/v1/settings")
+            and not path.startswith("/api/v1/reader")
+        )
         try:
             if scoped and request.method != "OPTIONS":
-                with app.state.runtime.request(request.headers.get(SESSION_HEADER), write=request.method not in {"GET", "HEAD"}):
+                with app.state.runtime.request(
+                    request.headers.get(SESSION_HEADER), write=request.method not in {"GET", "HEAD"}
+                ):
                     response = await call_next(request)
             else:
                 response = await call_next(request)
         except SettingsError as exc:
-            response = JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message, "path": None}})
+            response = JSONResponse(
+                status_code=exc.status,
+                content={"error": {"code": exc.code, "message": exc.message, "path": None}},
+            )
         duration_ms = (time.perf_counter() - start) * 1000.0
         if request.url.path != "/api/v1/health":
             logger.info(
@@ -194,7 +218,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(SettingsError)
     async def settings_error_handler(request: Request, exc: SettingsError) -> JSONResponse:
-        return JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message, "path": None}})
+        return JSONResponse(
+            status_code=exc.status,
+            content={"error": {"code": exc.code, "message": exc.message, "path": None}},
+        )
 
     @app.exception_handler(RagError)
     async def rag_error_handler(request: Request, exc: RagError) -> JSONResponse:
@@ -270,6 +297,77 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         return JSONResponse(status_code=exc.status_code, content=content)
 
+    @app.exception_handler(ReaderError)
+    async def reader_error_handler(request: Request, exc: ReaderError) -> JSONResponse:
+        """Reader API domain errors: fixed code/message + meta."""
+        logger.info(
+            "reader error method=%s path=%s code=%s",
+            request.method,
+            request.url.path,
+            exc.code.value,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "code": exc.code.value,
+                    "message": exc.message,
+                    "path": None,
+                },
+                "meta": exc.meta,
+            },
+        )
+
+    @app.exception_handler(ExportError)
+    async def export_error_handler(request: Request, exc: ExportError) -> JSONResponse:
+        """Export domain errors: fixed code/message, never a stack trace."""
+        logger.info(
+            "export error method=%s path=%s code=%s",
+            request.method,
+            request.url.path,
+            exc.code,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": exc.code, "message": exc.message, "path": exc.path}},
+        )
+
+    @app.exception_handler(TranscriptionError)
+    async def transcription_error_handler(
+        request: Request, exc: TranscriptionError
+    ) -> JSONResponse:
+        logger.info(
+            "transcription error method=%s path=%s code=%s",
+            request.method,
+            request.url.path,
+            exc.code.value,
+        )
+        path = (
+            exc.path if isinstance(exc.path, str) and not exc.path.startswith(("/", "\\")) else None
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": exc.code.value, "message": exc.message, "path": path}},
+        )
+
+    @app.exception_handler(DocumentPreviewError)
+    async def document_preview_error_handler(
+        request: Request, exc: DocumentPreviewError
+    ) -> JSONResponse:
+        logger.info(
+            "document preview error method=%s path=%s code=%s",
+            request.method,
+            request.url.path,
+            exc.code.value,
+        )
+        path = (
+            exc.path if isinstance(exc.path, str) and not exc.path.startswith(("/", "\\")) else None
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": exc.code.value, "message": exc.message, "path": path}},
+        )
+
     @app.exception_handler(VaultError)
     async def vault_error_handler(request: Request, exc: VaultError) -> JSONResponse:
         logger.info(
@@ -287,10 +385,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> JSONResponse:
         status_code, payload = _validation_error_payload(exc)
         logger.info(
-            "request validation method=%s path=%s status=%d",
+            "request validation method=%s path=%s status=%d error_count=%d error_types=%s",
             request.method,
             request.url.path,
             status_code,
+            len(exc.errors()),
+            sorted({str(item.get("type", "unknown")) for item in exc.errors()}),
         )
         return JSONResponse(status_code=status_code, content=payload)
 

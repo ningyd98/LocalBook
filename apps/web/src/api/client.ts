@@ -17,26 +17,78 @@ export class ApiError<T = unknown> extends Error {
   constructor(message:string,status:number,code?:string,path?:string|null,meta?:ApiErrorMeta,endpoint?:string){super(message);this.name="ApiError";this.status=status;this.code=code;this.path=path;this.meta=meta;this.endpoint=endpoint}
 }
 let vaultSession: string | null = null;
-export const setVaultSession = (session: string | null) => { vaultSession = session; };
+/**
+ * Vault root bound to {@link vaultSession}. It separates a same-vault rotation
+ * (a backend restart) — which may be rebound and retried transparently — from a
+ * real vault switch, which must never retarget an open draft.
+ */
+let vaultRoot: string | null = null;
+let rebindPromise: Promise<boolean> | null = null;
+/** Session codes meaning "this page holds a session the server no longer knows". */
+const sessionCodes = ["vault_session_changed", "vault_session_required"];
+const normalizeRoot = (value: string | null | undefined) => value?.replace(/\/+$/, "") ?? null;
+export const setVaultSession = (session: string | null, root?: string | null) => {
+  vaultSession = session;
+  // A null session means nothing is bound: a leftover root must not let a later
+  // rebind claim a session that this page never bound.
+  if (session === null) vaultRoot = null;
+  else if (root !== undefined) vaultRoot = normalizeRoot(root);
+};
 export const getVaultSession = () => vaultSession;
-export async function request<T>(path:string,init?:RequestInit):Promise<T>{
+export const getVaultRoot = () => vaultRoot;
+/**
+ * A backend restart rotates the in-memory vault session id without changing the
+ * vault. Adopt the new session in place so a request rejected by the stale-page
+ * guard is not lost, but only while the root is unchanged — a page bound to
+ * another vault is never silently retargeted. Concurrent failures share one
+ * round-trip and every caller retries at most once.
+ */
+function rebindRestartedVault(): Promise<boolean> {
+  if (vaultRoot === null) return Promise.resolve(false);
+  if (rebindPromise) return rebindPromise;
+  rebindPromise = (async () => {
+    try {
+      const response = await fetch(`${API_BASE}/settings`, { headers: { "Accept": "application/json" } });
+      if (!response.ok) return false;
+      const body = await response.json() as { vault_session_id?: unknown; changing?: unknown; vault?: { root?: unknown } };
+      if (body?.changing === true || typeof body.vault_session_id !== "string") return false;
+      const root = typeof body.vault?.root === "string" ? body.vault.root : null;
+      if (normalizeRoot(root) !== vaultRoot) return false;
+      vaultSession = body.vault_session_id;
+      return true;
+    } catch { return false; }
+    finally { rebindPromise = null; }
+  })();
+  return rebindPromise;
+}
+export async function request<T>(path:string,init?:RequestInit):Promise<T>{return send<T>(path,init,true)}
+async function send<T>(path:string,init:RequestInit|undefined,allowRebind:boolean):Promise<T>{
   const scoped = !path.startsWith("/settings") && path !== "/health" && path !== "/ai/status";
   const session = vaultSession;
+  const rootAtSend = vaultRoot;
   const headers = new Headers(init?.headers);
   if (scoped && session) headers.set("X-LocalNote-Vault-Session", session);
   let response:Response;
   try{response=await fetch(`${API_BASE}${path}`,{ ...init, headers })}catch(error){throw new ApiError(error instanceof Error?error.message:"Network request failed",0,"network_error",null,undefined,path)}
   let body:unknown=null;
   try{body=await response.json()}catch{/* non-JSON error bodies still surface as a safe ApiError below */}
-  if(scoped && session !== vaultSession) throw new ApiError("Response belongs to a previous vault.",409,"stale_response",null,undefined,path);
+  // The session rotated while this request was in flight. While the bound root is
+  // unchanged the payload still belongs to this vault (a restarted backend that
+  // had already accepted the request); only a changed root is a previous vault.
+  const rotated = scoped && session !== vaultSession;
+  if(rotated && !(rootAtSend !== null && rootAtSend === vaultRoot)) throw new ApiError("Response belongs to a previous vault.",409,"stale_response",null,undefined,path);
   if(!response.ok){
     const errorBody=body as Partial<VaultErrorBody> & { meta?: ApiErrorMeta };
     const error=errorBody?.error;
     const meta=errorBody?.meta&&typeof errorBody.meta==="object"?errorBody.meta:undefined;
-    if (scoped && ["vault_session_changed", "vault_session_required"].includes(error?.code ?? "")) {
+    const code=typeof error?.code==="string"?error.code:undefined;
+    if (scoped && sessionCodes.includes(code ?? "")) {
       window.dispatchEvent(new Event("localnote-vault-changed"));
+      // Only a rejected request is replayed: the server never applied it, so the
+      // retry cannot duplicate a write. Exactly one retry, never a loop.
+      if (allowRebind && (rotated || await rebindRestartedVault())) return send<T>(path,init,false);
     }
-    throw new ApiError(typeof error?.message==="string"?error.message:`Request failed (${response.status})`,response.status,typeof error?.code==="string"?error.code:undefined,typeof error?.path==="string"?error.path:null,meta,path)
+    throw new ApiError(typeof error?.message==="string"?error.message:`Request failed (${response.status})`,response.status,code,typeof error?.path==="string"?error.path:null,meta,path)
   }
   return body as T
 }
@@ -80,10 +132,16 @@ export function uploadAttachmentBase64(args:{originalName:string;contentBase64:s
 export function uploadAttachmentMultipart(file:File,targetDirectory:string,originalName?:string){const form=new FormData();form.append("file",file,file.name||"attachment");form.append("target_directory",targetDirectory);if(originalName)form.append("original_name",originalName);return request<import("./types").AttachmentUploadResponse>("/vault/attachments/multipart",{method:"POST",body:form})}
 /** Encoded read-only URL for a Vault-root-relative resource path. */
 export function vaultResourceUrl(path:string){return `${API_BASE}/vault/resource?${new URLSearchParams({path})}`}
+/** Build a PDF preview URL for a Vault document attachment. */
+export function vaultDocumentPreviewUrl(path:string){return `${API_BASE}/vault/document-preview?${new URLSearchParams({path})}`}
+/** Run the configured local speech-to-text command over an audio attachment. */
+export function transcribeAudio(args:{path:string;language?:string|null}){
+  return request<import("./types").TranscriptionResponse>("/transcription",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:args.path,language:args.language ?? null})});
+}
 export {resolveVaultRelativePath} from "@localnote/protocol";
 /** Encode each path segment (spaces/Chinese/Emoji) while keeping `/` literal. */
 function encodeNotePath(path:string){return path.split("/").map(encodeURIComponent).join("/")}
-function graphQueryString(query:GraphQuery):string{const params=new URLSearchParams();if(query.limit!==undefined)params.set("limit",String(query.limit));if(query.offset!==undefined)params.set("offset",String(query.offset));if(query.tag!==undefined&&query.tag!==null)params.set("tag",query.tag);if(query.include_broken!==undefined)params.set("include_broken",String(query.include_broken));if(query.depth!==undefined)params.set("depth",String(query.depth));if(query.direction!==undefined)params.set("direction",query.direction);const serialized=params.toString();return serialized?`?${serialized}`:""}
+function graphQueryString(query:GraphQuery):string{const params=new URLSearchParams();if(query.limit!==undefined)params.set("limit",String(query.limit));if(query.offset!==undefined)params.set("offset",String(query.offset));if(query.tag!==undefined&&query.tag!==null)params.set("tag",query.tag);if(query.include_broken!==undefined)params.set("include_broken",String(query.include_broken));if(query.include_semantic!==undefined)params.set("include_semantic",String(query.include_semantic));if(query.depth!==undefined)params.set("depth",String(query.depth));if(query.direction!==undefined)params.set("direction",query.direction);const serialized=params.toString();return serialized?`?${serialized}`:""}
 export function fetchGraph(query:GraphQuery={}){return request<GraphResponse>(`/graph${graphQueryString(query)}`)}
 export function fetchLocalGraph(note:string,query:GraphQuery={}){return request<GraphResponse>(`/graph/local/${encodeNotePath(note)}${graphQueryString(query)}`)}
 export function fetchTagGraph(tag:string,query:GraphQuery={}){return request<GraphResponse>(`/graph/tag/${encodeNotePath(tag)}${graphQueryString(query)}`)}
@@ -115,7 +173,7 @@ export function rebuildRagIndex(){return request<import("./types").RagIndexRebui
 /** Retrieval only: no chat model is called (used by diagnostics/tests). */
 export function ragSearch(body:import("./types").RagSearchRequest){return request<import("./types").RagSearchResponse>("/rag/search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})}
 /** Full grounded answer: retrieve → (rerank) → evidence pack → generation. */
-export function ragQuery(body:import("./types").RagQueryRequest){return request<import("./types").RagQueryResponse>("/rag/query",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})}
+export function ragQuery(body:import("./types").RagQueryRequest, signal?:AbortSignal){return request<import("./types").RagQueryResponse>("/rag/query",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),signal})}
 export function listHistory(){return request<import("./types").HistoryPageDTO>("/history")}
 export function getHistory(id:string){return request<import("./types").JobDetailDTO>(`/history/${encodeURIComponent(id)}`)}
 export function createJob(body:import("./types").JobCreateRequest){return request<import("./types").JobDetailDTO>("/jobs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})}
@@ -126,3 +184,35 @@ export function fetchSchedulerStatus(){return request<import("./types").Schedule
 export function runSchedulerTask(task:string,body:import("./types").SchedulerRunRequest={confirm:false}){return request<import("./types").SchedulerRunDTO>(`/scheduler/run/${encodeURIComponent(task)}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})}
 export function listSchedulerRuns(params:{limit?:number;offset?:number;task?:string}={}){const query=new URLSearchParams();if(params.limit!==undefined)query.set("limit",String(params.limit));if(params.offset!==undefined)query.set("offset",String(params.offset));if(params.task)query.set("task",params.task);const serialized=query.toString();return request<import("./types").SchedulerRunsPageDTO>(`/scheduler/runs${serialized?`?${serialized}`:""}`)}
 export function schedulerRecovery(runId:string,action:import("./types").SchedulerRecoveryAction){return request<Record<string,unknown>>(`/scheduler/recovery/${encodeURIComponent(runId)}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action})})}
+
+// ---------------------------------------------------------------------------
+// Note export
+// ---------------------------------------------------------------------------
+/**
+ * Binary sibling of {@link request}: `/export/markdown` answers with the file
+ * itself, not JSON, so the body is returned as a Blob. Scoping and error
+ * handling stay identical (same session header, same `{"error":{…}}` body).
+ */
+async function requestBlob(path:string,allowRebind=true):Promise<Blob>{
+  const headers=new Headers();
+  const session=vaultSession;
+  if(session)headers.set("X-LocalNote-Vault-Session",session);
+  let response:Response;
+  try{response=await fetch(`${API_BASE}${path}`,{headers})}catch(error){throw new ApiError(error instanceof Error?error.message:"Network request failed",0,"network_error",null,undefined,path)}
+  if(!response.ok){
+    let body:unknown=null;
+    try{body=await response.json()}catch{/* non-JSON bodies still surface as an ApiError below */}
+    const error=(body as Partial<VaultErrorBody>|null)?.error;
+    const code=typeof error?.code==="string"?error.code:undefined;
+    if(sessionCodes.includes(code??"")){
+      window.dispatchEvent(new Event("localnote-vault-changed"));
+      if(allowRebind&&await rebindRestartedVault())return requestBlob(path,false);
+    }
+    throw new ApiError(typeof error?.message==="string"?error.message:`Request failed (${response.status})`,response.status,code,typeof error?.path==="string"?error.path:null,undefined,path);
+  }
+  return response.blob();
+}
+/** Manifest for one note: rendered-ready Markdown plus inlined attachments. */
+export function exportNote(path:string){return request<import("./types").ExportNoteResponse>(`/export/note?${new URLSearchParams({path})}`)}
+/** The note as a single self-contained `.md` file (attachments inlined). */
+export function downloadExportMarkdown(path:string){return requestBlob(`/export/markdown?${new URLSearchParams({path})}`)}

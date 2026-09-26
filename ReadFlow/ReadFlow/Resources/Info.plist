@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleExecutable</key>
+	<string>ReadFlow</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.localbook.readflow</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>ReadFlow</string>
+	<key>CFBundleDisplayName</key>
+	<string>ReadFlow</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.3.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<false/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2024 LocalBook. All rights reserved.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>ReadFlow 需要访问其他应用以捕获选中的文本。</string>
+	<key>NSSystemAdministrationUsageDescription</key>
+	<string>ReadFlow 需要辅助功能权限来读取其他应用中的选中文本。</string>
+</dict>
+</plist>

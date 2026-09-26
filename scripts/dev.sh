@@ -33,6 +33,12 @@ fi
 # Keep Corepack's cache inside the project when it is available. This avoids
 # failures on machines where the global Corepack cache is not writable.
 export COREPACK_HOME="${COREPACK_HOME:-$ROOT/.cache/corepack}"
+# Keep the project-owned pnpm shim on PATH so nested package scripts can invoke
+# `pnpm` reliably in sandboxed environments.
+if [[ -x "$ROOT/.cache/pnpm-bin/pnpm" ]]; then
+  PATH="$ROOT/.cache/pnpm-bin:$PATH"
+  export PATH
+fi
 
 LOCALNOTE_HOST="${LOCALNOTE_HOST:-127.0.0.1}"
 LOCALNOTE_PORT="${LOCALNOTE_PORT:-3780}"

@@ -2,11 +2,40 @@
 
 from __future__ import annotations
 
+import json
+from urllib.parse import urlsplit
+
 import httpx
 
 from ..errors import AIAdapterError, CapabilityUnavailable
 from ..schemas import AICapabilities, DiscoveredModel
 from .base import ChatResult
+
+
+def _messages_with_schema(
+    messages: list[dict[str, str]], response_schema: dict[str, object]
+) -> list[dict[str, str]]:
+    """Keep structured-output constraints when a provider rejects json_schema.
+
+    OpenAI-compatible services vary in their supported ``response_format``
+    modes.  A prompt-only retry must still tell the model which fields the
+    server will validate; otherwise valid JSON with the wrong shape is returned
+    and every structured workflow fails locally.
+    """
+    schema = json.dumps(response_schema, ensure_ascii=False, sort_keys=True)
+    instruction = (
+        "Return only one valid JSON object matching this JSON Schema exactly. "
+        "Include all required properties, do not add properties, and do not use "
+        "Markdown fences. JSON Schema:\n"
+        f"{schema}"
+    )
+    result = [dict(message) for message in messages]
+    system = next((message for message in result if message.get("role") == "system"), None)
+    if system is None:
+        result.insert(0, {"role": "system", "content": instruction})
+    else:
+        system["content"] = f"{system.get('content', '')}\n\n{instruction}"
+    return result
 
 
 def _error_kind(status_code: int) -> str:
@@ -42,6 +71,18 @@ class OpenAICompatibleAdapter:
         self.max_bytes = max_response_bytes
         # Shell proxies are opt-in (see ``AISettings.use_env_proxy``).
         self.trust_env = bool(trust_env)
+        try:
+            host = (urlsplit(self.base_url).hostname or "").lower()
+        except ValueError:
+            host = ""
+        # Chat Completions uses max_tokens on most compatible servers. OpenAI's
+        # first-party endpoint uses max_completion_tokens for current models.
+        self.max_tokens_field = (
+            "max_completion_tokens"
+            if host == "api.openai.com"
+            else "max_tokens"
+        )
+        self.is_deepseek = host == "api.deepseek.com"
 
     @property
     def headers(self) -> dict[str, str]:
@@ -118,13 +159,25 @@ class OpenAICompatibleAdapter:
             "model": model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "temperature": temperature,
-            "max_output_tokens": max_output_tokens,
+            self.max_tokens_field: max_output_tokens,
         }
+        if self.is_deepseek:
+            # Every LocalBook workflow has a bounded final-answer budget.
+            # DeepSeek's default thinking can consume it before any answer,
+            # including on the RAG path that does not require a JSON schema.
+            body["thinking"] = {"type": "disabled"}
         if response_schema:
-            body["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"name": "response", "schema": response_schema, "strict": True},
-            }
+            if self.is_deepseek:
+                # DeepSeek Chat Completions supports json_object, not the
+                # json_schema response format. Structured workflows still need
+                # the schema in the prompt for local validation.
+                body["messages"] = _messages_with_schema(body["messages"], response_schema)
+                body["response_format"] = {"type": "json_object"}
+            else:
+                body["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {"name": "response", "schema": response_schema, "strict": True},
+                }
         try:
             payload = await self._request("POST", "/chat/completions", json=body)
         except AIAdapterError as exc:
@@ -133,18 +186,55 @@ class OpenAICompatibleAdapter:
                 and exc.http_status == 400
                 and "response_format" in body
             ):
-                # Some OpenAI-compatible services reject json_schema
-                # response_format.  Retry once as plain JSON; local strict
-                # validation remains the final authority (PLAN-M6 §11.2).
-                fallback = {key: value for key, value in body.items() if key != "response_format"}
-                payload = await self._request("POST", "/chat/completions", json=fallback)
+                # Prefer JSON mode where the provider supports it. The schema
+                # remains in the system prompt in either fallback, so the
+                # service can still validate one stable output contract.
+                if self.is_deepseek:
+                    # JSON mode was already the first attempt for DeepSeek.
+                    # Retry only once without response_format.
+                    fallback = {
+                        key: value for key, value in body.items() if key != "response_format"
+                    }
+                    payload = await self._request("POST", "/chat/completions", json=fallback)
+                else:
+                    fallback = {
+                        **body,
+                        "messages": _messages_with_schema(body["messages"], response_schema),
+                        "response_format": {"type": "json_object"},
+                    }
+                    try:
+                        payload = await self._request(
+                            "POST", "/chat/completions", json=fallback
+                        )
+                    except AIAdapterError as fallback_error:
+                        if (
+                            fallback_error.kind != "http_error"
+                            or fallback_error.http_status != 400
+                        ):
+                            raise
+                        # Older compatible servers may not support JSON mode at all.
+                        plain_json = {
+                            key: value
+                            for key, value in fallback.items()
+                            if key != "response_format"
+                        }
+                        payload = await self._request(
+                            "POST", "/chat/completions", json=plain_json
+                        )
             else:
                 raise
         try:
-            content = payload["choices"][0]["message"]["content"]
+            choice = payload["choices"][0]
+            if not isinstance(choice, dict):
+                raise AIAdapterError("invalid_response")
+            if choice.get("finish_reason") in {
+                "length", "content_filter", "aborted", "insufficient_system_resource"
+            }:
+                raise AIAdapterError("invalid_response")
+            content = choice["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:
             raise AIAdapterError("invalid_response") from e
-        if not isinstance(content, str):
+        if not isinstance(content, str) or not content.strip():
             raise AIAdapterError("invalid_response")
         return ChatResult(content=content, model=str(payload.get("model") or model))
 

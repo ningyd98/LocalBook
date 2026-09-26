@@ -59,9 +59,7 @@ def _tree(trash: TrashService) -> list[str]:
     if not root.exists():
         return []
     return sorted(
-        str(path.relative_to(root))
-        for path in root.rglob("*")
-        if path.name != "index.json"
+        str(path.relative_to(root)) for path in root.rglob("*") if path.name != "index.json"
     )
 
 
@@ -215,6 +213,62 @@ def test_retention_purges_expired_entries(trash: TrashService):
     assert not (trash.root / item.id).exists()
 
 
+def test_purge_limit_bounds_expired_batch(trash: TrashService):
+    now = datetime.now(UTC) + timedelta(days=31)
+    entries = []
+    for name in ("a.md", "b.md", "c.md"):
+        entries.append(trash.trash(name, _write(trash.vault, name)))
+    # All expire relative to this moment, but request cleanup removes only a batch.
+    assert trash.purge_expired(now=now, limit=2) == 2
+    assert len(trash._load_index()) == 1
+    assert trash.purge_expired(now=now, limit=2) == 1
+    assert trash._load_index() == []
+
+
+def test_purge_failure_leaves_quarantine_for_retry(trash: TrashService, monkeypatch):
+    _write(trash.vault, "folder/file.md")
+    trash.trash("folder", None)
+    now = datetime.now(UTC) + timedelta(days=31)
+    import shutil
+
+    original_rmtree = shutil.rmtree
+    calls = 0
+
+    def fail_once(path, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("simulated cleanup failure")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("server.vault.trash.shutil.rmtree", fail_once)
+    assert trash.purge_expired(now=now, limit=1) == 1
+    assert trash._load_index() == []
+    assert list(trash.root.glob(".purge-*"))
+    trash._clean_quarantine(limit=1)
+    assert not list(trash.root.glob(".purge-*"))
+
+
+def test_expired_large_tree_is_deleted_outside_mutation_lock(trash: TrashService, monkeypatch):
+    for index in range(80):
+        _write(trash.vault, f"big/{index}.md", b"x")
+    item = trash.trash("big", None)
+    now = datetime.now(UTC) + timedelta(days=31)
+    import shutil
+
+    original_rmtree = shutil.rmtree
+    lock_owned_during_delete = []
+
+    def observe(path, *args, **kwargs):
+        lock_owned_during_delete.append(trash.vault._mutation_lock._is_owned())
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("server.vault.trash.shutil.rmtree", observe)
+    assert trash.purge_expired(now=now, limit=1) == 1
+    assert lock_owned_during_delete == [False]
+    assert not (trash.root / item.id).exists()
+
+
 def test_retention_boundary_is_exactly_the_window(trash: TrashService):
     vault = trash.vault
     item = trash.trash("a.md", _write(vault, "a.md"))
@@ -233,20 +287,108 @@ def test_days_remaining_counts_down(trash: TrashService):
     assert later.expires_at > datetime.now(UTC)
 
 
-def test_index_is_derived_and_survives_a_corrupt_file(trash: TrashService):
+def test_corrupt_index_is_rejected_without_overwriting_or_losing_payload(
+    trash: TrashService,
+):
     vault = trash.vault
-    item = trash.trash("a.md", _write(vault, "a.md"))
-    # A corrupt index must not raise or delete payloads; it just stops listing.
-    trash.index_path.write_bytes(b"{ not json")
-    assert trash.list_entries() == []
+    digest = _write(vault, "a.md")
+    item = trash.trash("a.md", digest)
+    corrupted = b"{ not json"
+    trash.index_path.write_bytes(corrupted)
+
+    with pytest.raises(Exception):
+        trash.list_entries()
+    with pytest.raises(Exception):
+        trash.trash("b.md", _write(vault, "b.md"))
+
+    assert trash.index_path.read_bytes() == corrupted
     assert (trash.root / item.blob).exists()
-    # A damaged payload is reported as unavailable, not silently indexed away.
-    (trash.root / item.blob).unlink()
+    assert (vault.root / "b.md").exists()
+
+
+def test_malformed_index_is_rejected_without_dropping_payload(trash: TrashService):
+    item = trash.trash("a.md", _write(trash.vault, "a.md"))
+    data = json.loads(trash.index_path.read_text())
+    data["entries"][0]["blob"] = "../../outside"
+    trash.index_path.write_text(json.dumps(data))
+    with pytest.raises(Exception):
+        trash.list_entries()
+    assert (trash.root / item.blob).exists()
+
+
+def test_restore_refuses_symlink_payload(trash: TrashService, tmp_path: Path):
+    item = trash.trash("a.md", _write(trash.vault, "a.md"))
+    payload = trash.root / item.blob
+    payload.unlink()
+    outside = tmp_path / "outside"
+    outside.write_text("secret")
+    payload.symlink_to(outside)
     with pytest.raises(Exception):
         trash.restore(item.id)
+    assert outside.read_text() == "secret"
 
 
-def test_index_file_is_not_user_reachable_through_the_vault_api(trash: TrashService, tmp_path: Path):
+def test_trash_rolls_back_when_index_commit_fails(trash: TrashService, monkeypatch):
+    digest = _write(trash.vault, "a.md")
+    original_write = trash._write_index
+    monkeypatch.setattr(
+        trash, "_write_index", lambda _items: (_ for _ in ()).throw(OSError("disk full"))
+    )
+    with pytest.raises(OSError):
+        trash.trash("a.md", digest)
+    assert (trash.vault.root / "a.md").exists()
+    assert not list(trash.root.glob("*/a.md"))
+    monkeypatch.setattr(trash, "_write_index", original_write)
+
+
+def test_restore_rolls_back_when_index_commit_fails(trash: TrashService, monkeypatch):
+    item = trash.trash("a.md", _write(trash.vault, "a.md"))
+    monkeypatch.setattr(
+        trash, "_write_index", lambda _items: (_ for _ in ()).throw(OSError("disk full"))
+    )
+    with pytest.raises(OSError):
+        trash.restore(item.id)
+    assert (trash.root / item.blob).exists()
+    assert not (trash.vault.root / "a.md").exists()
+
+
+def test_delete_restores_payload_when_index_commit_fails(trash: TrashService, monkeypatch):
+    item = trash.trash("a.md", _write(trash.vault, "a.md"))
+    original_index = trash.index_path.read_bytes()
+    monkeypatch.setattr(
+        trash,
+        "_write_index",
+        lambda _items: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(OSError):
+        trash.delete(item.id)
+
+    assert trash.index_path.read_bytes() == original_index
+    assert (trash.root / item.blob).exists()
+    assert not list(trash.root.glob(".delete-*"))
+
+
+def test_empty_restores_all_payloads_when_index_commit_fails(trash: TrashService, monkeypatch):
+    items = [trash.trash(name, _write(trash.vault, name)) for name in ("a.md", "b.md")]
+    original_index = trash.index_path.read_bytes()
+    monkeypatch.setattr(
+        trash,
+        "_write_index",
+        lambda _items: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(OSError):
+        trash.empty()
+
+    assert trash.index_path.read_bytes() == original_index
+    assert all((trash.root / item.blob).exists() for item in items)
+    assert not list(trash.root.glob(".delete-*"))
+
+
+def test_index_file_is_not_user_reachable_through_the_vault_api(
+    trash: TrashService, tmp_path: Path
+):
     vault = trash.vault
     trash.trash("a.md", _write(vault, "a.md"))
     listing = vault.list_tree(recursive=True, include_hidden=False)
@@ -288,7 +430,9 @@ def test_trash_api_round_trip(trash_client):
     vault: VaultService = trash_client.vault
     digest = _write(vault, "notes/a.md", b"# A\n")
 
-    created = trash_client.post("/api/v1/trash", json={"path": "notes/a.md", "expected_sha256": digest})
+    created = trash_client.post(
+        "/api/v1/trash", json={"path": "notes/a.md", "expected_sha256": digest}
+    )
     assert created.status_code == 201
     entry = created.json()
     assert entry["original_path"] == "notes/a.md"
@@ -354,7 +498,9 @@ def test_trash_api_error_bodies(trash_client):
     assert missing.json()["error"]["code"] == "expected_hash_required"
 
     # Stale digest: 409, and the file stays.
-    conflict = trash_client.post("/api/v1/trash", json={"path": "a.md", "expected_sha256": _digest(b"other\n")})
+    conflict = trash_client.post(
+        "/api/v1/trash", json={"path": "a.md", "expected_sha256": _digest(b"other\n")}
+    )
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "file_conflict"
     assert (vault.root / "a.md").exists()

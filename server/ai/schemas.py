@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AIStatus(StrEnum):
@@ -83,6 +83,13 @@ class ChatResponse(StrictModel):
     model: str = ""
     degraded: bool = False
 
+    @field_validator("answer")
+    @classmethod
+    def _answer_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("answer must not be blank")
+        return value
+
 
 class NoteRequest(StrictModel):
     note_path: str
@@ -116,6 +123,13 @@ class SummarizeResponse(StrictModel):
     prompt_version: str = ""
     model: str = ""
     degraded: bool = False
+
+    @field_validator("summary")
+    @classmethod
+    def _summary_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("summary must not be blank")
+        return value
 
 
 class TagSuggestion(StrictModel):

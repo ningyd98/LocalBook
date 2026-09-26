@@ -2,10 +2,10 @@
 
 > **本地优先的 Markdown 笔记工作台 —— 文件即数据，服务只是门面。**
 
-[![version](https://img.shields.io/badge/version-1.1.0-blue.svg)](./CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.3.0-blue.svg)](./CHANGELOG.md)
 [![python](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](https://www.python.org/)
 [![node](https://img.shields.io/badge/node-%3E%3D22%20%3C23-339933.svg)](https://nodejs.org/)
-[![tests](https://img.shields.io/badge/tests-1562%20passed-brightgreen.svg)](#测试与门禁)
+[![tests](https://img.shields.io/badge/tests-counted%20in%20CI-brightgreen.svg)](#测试与门禁)
 [![license](https://img.shields.io/badge/license-UNLICENSED-lightgrey.svg)](#许可)
 
 LocalNote（仓库名 **LocalBook**）是一套**跑在你自己机器上**的 Markdown 笔记服务：
@@ -23,6 +23,7 @@ LocalNote（仓库名 **LocalBook**）是一套**跑在你自己机器上**的 M
 
 - [为什么是 LocalNote](#为什么是-localnote)
 - [核心特性](#核心特性)
+- [ReadFlow 阅读采集客户端](#readflow-阅读采集客户端)
 - [界面](#界面)
 - [架构](#架构)
 - [技术栈](#技术栈)
@@ -55,12 +56,24 @@ LocalNote（仓库名 **LocalBook**）是一套**跑在你自己机器上**的 M
 ### 📝 编辑与阅读
 
 - **三种视图**：源码编辑（CodeMirror 6）、**实时预览**（同一个编辑器内渲染标题/
-  粗斜体/行内代码/链接/wikilink/图片 widget/列表/引用，**光标所在行保留原始语法**
-  以便就地编辑）、安全只读预览。
+  粗斜体/行内代码/链接/wikilink/图片 widget/列表/引用/**高亮与文字颜色**，**光标所在行
+  保留原始语法**以便就地编辑）、安全只读预览。
 - **分屏**编辑 + 预览，支持**同步滚动**（按相对位置双向联动，不抖动，可关闭）。
+- **行内文字格式**：工具栏与**正文右键菜单**都能**加粗**（`**…**`，`⌘/Ctrl+B`）、
+  **斜体**（`*…*`，`⌘/Ctrl+I`）、**高亮**（`==…==`，`⌘/Ctrl+Shift+H`）与**文字改色**
+  （7 色取色板，写成 `<span style="color:#rrggbb">…</span>`），一键**清除格式**。
+  再按一次同一格式即还原（成对切换）。渲染层只放行**纯颜色声明**这一种 `style`——
+  `background:url(…)`、`position:fixed`、事件属性等一律被清洗器丢弃。
+- **右键插入表格**：编辑区右键「插入表格」用 Word 式网格选行列（最多 8 列 × 12 行，
+  含表头），插入标准 GFM 管道表格并把光标停在首个表头单元格，预览区直接渲染成表格。
 - **多标签页**、树形文件导航、800ms 防抖自动保存与冲突处理（重新加载 / 保留本地）。
 - **可点击任务清单**：`- [ ]` / `- [x]` 在预览与实时模式渲染为复选框，点一下改写源码。
 - **标题快捷键**：`⌘/Ctrl+1…6` 设为对应级别，`⌘/Ctrl+0` 取消，同级再按切回正文。
+- **目录视图（Outline）**：侧栏「目录」实时列出当前笔记的全部标题，**按层级嵌套、可逐级
+  展开与折叠**（折叠会连带收起整棵子树，并标出被隐藏的标题数）。点标题即跳转——编辑器把
+  该行钉到视口顶部并落下光标，分屏/预览模式同时滚动预览到对应标题；**高亮跟随光标所在
+  章节**，折叠状态与光标位置按笔记分别记住，多标签切换互不干扰。标题直接从编辑中的源码
+  解析，围栏代码块与 frontmatter 内的 `#` 不会被误当成标题；折叠只影响视图，从不写入正文。
 - **字体与字号**：四套本地字体栈（无衬线/衬线/等宽/圆体，含中文回退，不联网加载）、
   作用范围（整个界面 / 仅正文）、**80%–160% 整体缩放**（预设 + 滑块 + `⌘/Ctrl±0`
   + `Ctrl+滚轮`），缩放作用于侧栏到编辑器全部元素。
@@ -81,6 +94,11 @@ LocalNote（仓库名 **LocalBook**）是一套**跑在你自己机器上**的 M
   折叠一层会连同其内部子文档一起收起。
 - **回收站**：文件与文件夹整体软删除，默认保留 **30 天**；列出原路径、删除时间与
   「剩余 N 天」，可单项恢复、彻底删除或清空。
+- **导出（Markdown / PDF）**：文件树右键一键导出。**附件会被内联**——Markdown 导出
+  成单个自包含 `.md`（图片以 `data:` URI 嵌入），PDF 由浏览器打印管线生成（矢量文本
+  + 内嵌图片），两者都不依赖笔记库、也不需要第二次鉴权请求，因此在反向代理后的
+  `note.ningyd.com` 同样可用。相对路径、`/` 根路径与 `![[图片]]` 三种引用都会解析，
+  代码块内的引用不动；超限或找不到的附件只记入 `warnings`，不会让整次导出失败。
 
 ### 🤖 AI（本地优先）
 
@@ -104,6 +122,10 @@ LocalNote（仓库名 **LocalBook**）是一套**跑在你自己机器上**的 M
 - **冲突检测**：update / delete / move 一律要求 `expected_sha256`。
 - **附件直传（M9）**：JSON ≤10 MiB 与 multipart 流式两条通道，四个入口
   （工具栏 / 拖拽 / 粘贴 / 目录右键），同名自动 `-2`/`-3` 去重，禁止覆盖。
+- **录音植入与本地转写**：工具栏可直接选择录音文件，Markdown 预览/实时预览显示
+  `<audio controls>` 播放器；通过本机 Whisper 兼容命令转为文字，并插入当前笔记，音频
+  始终保留在 Vault 中，不上传云端。
+- **文档附件预览**：工具栏可植入 Word、PowerPoint、Excel、PDF 等常见文件；PDF 直接查看，Office/WPS 文件由本机 `dsh-doc`/LibreOffice 临时转换为 PDF，缺失的微软中文字体会映射到本机等价字体，原文件不变。
 - **调度与恢复**：APScheduler（asyncio 降级）驱动三个稳定任务，run 全量审计、
   超时/幂等/清理、启动扫描标记 `recovery_required`、显式 hash-guard 恢复。
 - **错误契约**：统一 `{"error":{"code","message","path"}}`，不泄漏绝对路径、
@@ -222,23 +244,51 @@ LocalNote 默认不连任何模型，AI 功能显示「未配置」是正常状�
 任何供应商不可用时，AI 相关端点返回稳定错误码（503 / `capability_unavailable`），
 **不会影响编辑、搜索、图谱等核心功能**。
 
+### ReadFlow 阅读采集客户端
+
+V1.3 同步提供可选的 macOS 原生客户端：划词捕获、离线 SQLite/FTS5 检索、AI 问答
+降级与 LocalBook 增量同步。客户端不依赖服务端才能启动；同步时可通过 Bonjour
+自动发现本机服务。构建并生成 DMG：
+
+```bash
+cd ReadFlow
+bash scripts/package_dmg.sh -o dist-dmg
+```
+
+产物为 `ReadFlow/dist-dmg/ReadFlow-ReadFlow.dmg`。当前构建使用 ad-hoc 签名，
+**未公证且不保证通过 Gatekeeper**；安装后请将 `ReadFlow.app` 拖入「应用程序」。
+
 ## 配置
 
-全部配置通过环境变量（嵌套变量优先于扁平别名），也可以直接在界面「设置」里改
-并持久化到实例配置（0600）。最常用的几个：
+配置可通过环境变量设置（嵌套变量优先于扁平别名）；常用的 AI 与 Vault 配置
+也可在界面「设置」里修改并持久化到实例配置（0600）。联网搜索目前通过环境变量配置。
+最常用的几个：
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `LOCALNOTE_VAULT__ROOT` | 空 | **必填**。Vault 根目录，必须已存在 |
+| `LOCALNOTE_VAULT__MAX_FILE_BYTES` | `209715200` | 单文件读写/上传上限（200 MiB） |
 | `LOCALNOTE_HOST` / `LOCALNOTE_PORT` | `127.0.0.1` / `3780` | 后端监听地址与端口 |
 | `LOCALNOTE_AI__BASE_URL` | `http://127.0.0.1:8000/v1` | OpenAI 兼容端点 |
+| `LOCALNOTE_WEB_SEARCH__BASE_URL` | 空 | 可选的 SearXNG 地址；配置后 ReadFlow 的“联网”模式使用其 JSON 搜索接口。需要在 SearXNG 端启用 JSON 格式，且仅在服务端重启后生效 |
 | `LOCALNOTE_SERVER__SETTINGS_TRUSTED_HOSTS` | `[]` | 经反向代理访问 `/api/v1/settings` 时需要的额外 Host 白名单 |
 | `LOCALNOTE_VAULT__TRASH_RETENTION_DAYS` | `30` | 回收站保留天数 |
+| `LOCALNOTE_TRANSCRIPTION__ENABLED` | `true` | 是否启用本地转写 |
+| `LOCALNOTE_TRANSCRIPTION__COMMAND_TEMPLATE` | `whisper --model {model} --output_dir {output_dir} --output_format txt {input}` | 本地转写命令模板（不经过 shell） |
+| `LOCALNOTE_TRANSCRIPTION__MODEL` | `turbo` | Whisper 模型名 |
+| `LOCALNOTE_TRANSCRIPTION__LANGUAGE` | 空 | 默认语言，如 `zh` |
+| `LOCALNOTE_TRANSCRIPTION__TIMEOUT_SECONDS` | `900` | 单次转写超时 |
+| `LOCALNOTE_DOCUMENT_PREVIEW__ENABLED` | `true` | 是否启用 Office/PDF 预览 |
+| `LOCALNOTE_DOCUMENT_PREVIEW__COMMAND` | `dsh-doc` | 本地文档转 PDF 工具 |
+| `LOCALNOTE_DOCUMENT_PREVIEW__TIMEOUT_SECONDS` | `120` | 单次文档预览转换超时 |
+| `LOCALNOTE_DOCUMENT_PREVIEW__MAX_OUTPUT_BYTES` | `104857600` | 生成 PDF 大小上限 |
 | `VITE_API_PROXY_TARGET` | `http://127.0.0.1:3780` | 前端 `/api` 代理目标 |
 
 完整环境变量表、所有端点与稳定错误码见 **[`docs/api-reference.md`](./docs/api-reference.md)**。
 
 ## 测试与门禁
+
+Ruff 采用可见的分层门禁：`scripts/check-ruff-diff.py` 从 Git merge-base 计算变更生产 Python 行，对其执行 `pyproject.toml` 中完整 Ruff 规则，仅新增/修改行上的诊断使门禁失败；未变更行的既有债务继续保留并报告。本地也包含暂存与未暂存 diff；无基线的未跟踪文件按全文件严格检查。另对全量 `server/reader` 与 `server/vault` 运行规则并以 `--exit-zero` 输出历史债务明细（仅库存阶段非阻断，CI 日志保留完整文件/行号）；这不是“全量 Ruff 通过”。未在 `pyproject.toml` 全局忽略规则。
 
 ```bash
 ./scripts/check.sh          # 一键本地门禁：后端 pytest + typecheck + Vitest + 生产构建
@@ -257,13 +307,15 @@ pnpm --filter @localnote/web test       # 前端 Vitest
 pnpm --filter @localnote/web build      # 生产构建
 ```
 
-V1.1.0 当前基线（2026-09-12）：
+**可追溯统计口径**：下表是历史基线，不是实时承诺；数据为各测试套件独立运行时 pytest/Vitest 输出的用例数，RAG 数据集评估不计入单测。当前权威结果以 CI 最近一次成功运行日志为准（`bash scripts/check.sh` 会打印实际 passed/skipped 数量）。根 `pnpm typecheck` 覆盖全部 workspace，生产构建单独执行。更新数字时须从同一提交的完整门禁日志抄录结果和日期，勿手工推算。
+
+历史基线（2026-09-16，V1.3.0）：
 
 | 门禁 | 结果 |
 |---|---|
-| 后端 `tests/backend` | **928 passed, 3 skipped** |
-| 本地 RAG `tests/rag` | **272 passed, 2 skipped** |
-| 前端 Vitest | **362 passed, 3 skipped**（43 个文件） |
+| 后端 `tests/backend` | **966 passed, 3 skipped** |
+| 本地 RAG `tests/rag` | **279 passed, 2 skipped** |
+| 前端 Vitest | **421 passed, 3 skipped**（46 个文件） |
 | TypeScript typecheck | 全部 workspace 包通过 |
 | Vite 生产构建 | 通过 |
 
@@ -305,6 +357,14 @@ LocalNote 本身**不实现账号、认证或 HTTPS**，它的安全模型是「
 > 「无法读取服务配置」）；而且手工实例会占住 3780/5173，让 launchd 的服务反复
 > 启动失败（`launchctl print` 里 `last exit code` 非 0、`runs` 持续增长）。
 
+重启后请确认它**真的生效**——手工实例占着端口时，重启会静默无效，页面继续跑旧代码：
+
+```bash
+launchctl print gui/$(id -u)/com.ningyd.localbook-backend | grep -E '^\s+(state|pid|runs)'
+lsof -nP -iTCP:3780 -sTCP:LISTEN                          # 应当只有一个进程
+tail -n 20 ~/Library/Logs/localbook-backend-error.log      # 不应再出现 address already in use
+```
+
 ### 局域网 / 公网暴露
 
 一旦监听非回环地址（`0.0.0.0`、`::`、`192.168.x`、具体主机名等任意一种），
@@ -334,6 +394,7 @@ packages/editor/       CodeMirror 6 编辑器 + 实时预览装饰层
 packages/markdown/     安全只读预览渲染管线（remark/rehype + sanitize）
 packages/workspace/    Zustand 会话 store（树/标签/保存/冲突/关系/图/AI）
 packages/graph/        Graphology + Sigma 图谱可视化（WebGL 降级）
+ReadFlow/               macOS 原生阅读采集客户端（可选）
 server/
   api/                 路由、DI、lifespan、安全错误映射
   vault/               Vault Core：路径安全、原子写、事件、回收站、生命周期
@@ -356,7 +417,7 @@ docs/                  架构、Vault 规格、AI、RAG、路线图、API 参考
 
 ## 版本与路线图
 
-当前版本 **V1.1.0**。完整变更见 **[`CHANGELOG.md`](./CHANGELOG.md)**。
+当前版本 **V1.3.0**。完整变更见 **[`CHANGELOG.md`](./CHANGELOG.md)**。
 
 - **V1.0.0（M0–M13）**：Vault 安全读写与字节保真、Workspace/编辑器/预览、
   Metadata/Links/搜索、SQLite 派生索引、Graph、只读 AI、受控 Agent/Policy/
@@ -365,6 +426,9 @@ docs/                  架构、Vault 规格、AI、RAG、路线图、API 参考
 - **V1.1.0（M14）**：**本地优先 RAG** 全链路（分块 → embedding → 向量索引 →
   混合检索 → 证据包 → 生成 → 引用校验）、可选 HTTP 重排、多供应商 AI 档案、
   文件夹软删除与回收站、嵌套文档与分级收缩、字体/字号体系、分屏同步滚动。
+- **V1.3.0**：行内格式与表格插入、Outline 目录导航、Markdown/PDF 自包含导出，以及
+  **ReadFlow** macOS 离线阅读采集客户端（本地 SQLite/FTS5、划词捕获、可选同步、
+  Bonjour 服务发现与 AI 降级）。
 
 路线图与每个里程碑的验收记录见
 [`docs/development-roadmap.md`](./docs/development-roadmap.md)。

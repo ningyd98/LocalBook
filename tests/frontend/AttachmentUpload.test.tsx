@@ -330,9 +330,10 @@ describe("attachment viewer (ATT-15)", () => {
     expect(screen.getByRole("link", { name: /download/i })).toHaveAttribute("download", "photo 图.png");
   });
 
-  it("offers a download for non-image attachments and shows load failures", async () => {
+  it("previews PDFs and shows load failures for images", async () => {
     render(<AttachmentPreview path="notes/report.pdf" resolveResourceUrl={vaultResourceUrl}/>);
-    expect(screen.getByRole("link", { name: /open \/ download attachment/i })).toHaveAttribute("href", vaultResourceUrl("notes/report.pdf"));
+    expect(screen.getByTitle("report.pdf")).toHaveAttribute("src", vaultResourceUrl("notes/report.pdf"));
+    expect(screen.getByRole("link", { name: /download original/i })).toHaveAttribute("href", vaultResourceUrl("notes/report.pdf"));
     const { container } = rtlRender(<I18nProvider initialLocale="en-US"><AttachmentPreview path="notes/broken.png" resolveResourceUrl={vaultResourceUrl}/></I18nProvider>);
     fireEvent.error(container.querySelector("img")!);
     expect(await screen.findByText(/preview failed to load/i)).toBeInTheDocument();

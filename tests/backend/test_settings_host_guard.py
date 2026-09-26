@@ -105,14 +105,15 @@ def test_foreign_origin_is_rejected(trusted_client) -> None:
     assert response.json()["error"]["code"] == "settings_local_only"
 
 
-def test_forwarded_loopback_hop_allows_a_remote_peer(tmp_path) -> None:
-    """nginx -> frp -> Vite: the peer is public but the last XFF hop is loopback."""
+def test_forwarded_loopback_hop_does_not_authorize_a_remote_peer(tmp_path) -> None:
+    """A remote peer cannot grant itself local settings access with XFF."""
     app = _app(tmp_path, trusted=[PUBLIC_HOST])
     with TestClient(app, base_url=f"http://{PUBLIC_HOST}", client=("203.0.113.7", 51234)) as client:
         denied = client.get("/api/v1/settings")
         assert denied.status_code == 403
-        allowed = client.get(
+        spoofed = client.get(
             "/api/v1/settings",
             headers={"X-Forwarded-For": "203.0.113.7, 127.0.0.1"},
         )
-    assert allowed.status_code == 200, allowed.text
+    assert spoofed.status_code == 403, spoofed.text
+    assert spoofed.json()["error"]["code"] == "settings_local_only"

@@ -36,9 +36,13 @@ export interface FileTreeProps {
   onNewRootNote?: () => void;
   /** Context menu → ask to move that file or folder to the recycle bin. */
   onDelete?: (path: string) => void;
+  /** Context menu → download the note as one Markdown file (attachments inlined). */
+  onExportMarkdown?: (path: string) => void;
+  /** Context menu → open the print view that saves the note as a PDF. */
+  onExportPdf?: (path: string) => void;
 }
 
-export function FileTree({ entries, expanded, collapsed = [], activePath, onToggle, onOpen, onMove, onOpenAttachment, onUploadToDirectory, onRename, activeAttachmentPath, onNewChildNote, onNewSiblingNote, onNewRootNote, onDelete }: FileTreeProps) {
+export function FileTree({ entries, expanded, collapsed = [], activePath, onToggle, onOpen, onMove, onOpenAttachment, onUploadToDirectory, onRename, activeAttachmentPath, onNewChildNote, onNewSiblingNote, onNewRootNote, onDelete, onExportMarkdown, onExportPdf }: FileTreeProps) {
   const { tr } = useI18n();
   const [dragging, setDragging] = useState<string | null>(null);
   const [over, setOver] = useState<string | null>(null);
@@ -48,6 +52,41 @@ export function FileTree({ entries, expanded, collapsed = [], activePath, onTogg
   const [draft, setDraft] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
   const renameInput = useRef<HTMLInputElement>(null);
+  const treeRef = useRef<HTMLDivElement>(null);
+  const focusRow = (index: number) => {
+    const items = treeRef.current?.querySelectorAll<HTMLElement>('[role="treeitem"]');
+    if (!items?.length) return;
+    const next = Math.max(0, Math.min(index, items.length - 1));
+    items.forEach((item, itemIndex) => {
+      item.tabIndex = itemIndex === next ? 0 : -1;
+    });
+    items[next]?.focus();
+  };
+  const onTreeKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const item = (event.target as HTMLElement).closest<HTMLElement>('[role="treeitem"]');
+    if (!item || !treeRef.current?.contains(item)) return;
+    const items = Array.from(treeRef.current.querySelectorAll<HTMLElement>('[role="treeitem"]'));
+    const index = items.indexOf(item);
+    if (event.key === "Home") { event.preventDefault(); focusRow(0); }
+    else if (event.key === "End") { event.preventDefault(); focusRow(items.length - 1); }
+    else if (event.key === "ArrowDown") { event.preventDefault(); focusRow(index + 1); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); focusRow(index - 1); }
+    else if (event.key === "ArrowRight") {
+      const button = item.querySelector("button");
+      const expanded = item.getAttribute("aria-expanded") === "true";
+      if (button && item.getAttribute("aria-expanded") !== null) {
+        event.preventDefault();
+        if (!expanded) button.click(); else focusRow(index + 1);
+      }
+    } else if (event.key === "ArrowLeft") {
+      if (item.getAttribute("aria-expanded") === "true") { event.preventDefault(); item.querySelector("button")?.click(); }
+      else {
+        const level = Number(item.getAttribute("aria-level"));
+        const parentIndex = items.slice(0, index).map((candidate, i) => ({ candidate, i })).reverse().find(({ candidate }) => Number(candidate.getAttribute("aria-level")) < level)?.i;
+        if (parentIndex !== undefined) { event.preventDefault(); focusRow(parentIndex); }
+      }
+    }
+  };
   useEffect(() => { if (renaming) { renameInput.current?.focus(); renameInput.current?.select(); } }, [renaming]);
   const startRename = (path: string) => { setMenu(null); setRenameError(null); setDraft(path.split("/").at(-1) ?? path); setRenaming(path); };
   const cancelRename = () => { setRenaming(null); setRenameError(null); };
@@ -97,12 +136,18 @@ export function FileTree({ entries, expanded, collapsed = [], activePath, onTogg
     if (onNewSiblingNote) items.push({ id: "sibling", label: kind === "directory" ? tr("在此文件夹新建文档", "New document in this folder") : tr("新建同级文档", "New document at this level"), icon: "note", onSelect: () => onNewSiblingNote(path) });
     if (onRename && kind === "file") items.push({ id: "rename", label: tr("重命名", "Rename"), icon: "edit", separated: items.length > 0, onSelect: () => startRename(path) });
     if (onUploadToDirectory && kind === "directory") items.push({ id: "upload", label: tr("上传到该目录", "Upload to this folder"), icon: "paperclip", separated: items.length > 0, onSelect: () => onUploadToDirectory(path) });
+    // Only notes are exportable: an attachment has no Markdown body to render.
+    if (kind === "file" && isEditableMarkdown(path) && (onExportMarkdown || onExportPdf)) {
+      const separated = items.length > 0;
+      if (onExportMarkdown) items.push({ id: "export-md", label: tr("导出 Markdown", "Export Markdown"), icon: "download", separated, onSelect: () => onExportMarkdown(path) });
+      if (onExportPdf) items.push({ id: "export-pdf", label: tr("导出 PDF（打印）", "Export PDF (print)"), icon: "print", onSelect: () => onExportPdf(path) });
+    }
     // A folder is trashed as a whole, so no row is pre-disabled: the caller
     // confirms and the server explains any refusal.
     if (onDelete) items.push({ id: "delete", label: tr("移到回收站", "Move to recycle bin"), icon: "trash", separated: items.length > 0, onSelect: () => onDelete(path) });
     return items;
   };
-  return <div role="tree" className="file-tree"
+  return <div ref={treeRef} role="tree" className="file-tree" onKeyDown={onTreeKeyDown}
     onContextMenu={onNewRootNote ? event => { if (event.target !== event.currentTarget) return; event.preventDefault(); setMenu(null); setBlankMenu({ x: event.clientX, y: event.clientY }); } : undefined}>
     {rows.map(row => {
     const folder = row.kind === "directory", open = isPathExpanded(row.path, expansion), droppable = folder && canDrop(row.path);
@@ -112,11 +157,14 @@ export function FileTree({ entries, expanded, collapsed = [], activePath, onTogg
     const uploadHere = folder && onUploadToDirectory;
     const canRename = !folder && Boolean(onRename);
     const canNest = Boolean(onNewChildNote) || Boolean(onNewSiblingNote);
-    const rowMenu = Boolean(uploadHere || canRename || canNest || onDelete);
+    // Export alone is a legitimate reason to open the row menu: a read-only
+    // viewer with no delete/rename rights must still be able to export.
+    const canExport = markdown && Boolean(onExportMarkdown || onExportPdf);
+    const rowMenu = Boolean(uploadHere || canRename || canNest || onDelete || canExport);
     const hasChildren = row.children.length > 0;
     const isRenaming = renaming === row.path;
     const selected = !folder && (row.path === activePath || row.path === activeAttachmentPath);
-    return <div key={row.path} role="treeitem" aria-level={row.depth + 1} aria-selected={selected} aria-expanded={hasChildren ? open : undefined} className={`ui-tree-row ${selected ? "selected" : ""} ${dragging === row.path ? "dragging" : ""} ${over === row.path && droppable ? "drop-target" : ""}`}
+    return <div key={row.path} role="treeitem" tabIndex={row.path === (activePath ?? rows[0]?.path) ? 0 : -1} aria-level={row.depth + 1} aria-selected={selected} aria-expanded={hasChildren ? open : undefined} className={`ui-tree-row ${selected ? "selected" : ""} ${dragging === row.path ? "dragging" : ""} ${over === row.path && droppable ? "drop-target" : ""}`}
     onDragOver={folder && onMove ? event => { if (!canDrop(row.path)) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setOver(row.path); } : undefined}
     onDragLeave={folder && onMove ? () => setOver(current => current === row.path ? null : current) : undefined}
     onDrop={folder && onMove ? event => drop(event, row.path) : undefined}>

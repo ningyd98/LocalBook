@@ -46,8 +46,18 @@ from .schemas import VaultFileEntry
 from .watcher import VaultWatcher
 
 _CHUNK_SIZE = 1024 * 1024
+# Listing is metadata-first: bound synchronous hashing so a large Vault does not
+# turn one tree request into unbounded file I/O. Entries beyond this budget have
+# sha256=None; mutation APIs continue to require/verify caller-supplied hashes.
+_DEFAULT_LIST_HASH_BUDGET = 64
 
 _MARKDOWN_SUFFIXES = (".md", ".markdown")
+_AUDIO_RESOURCE_MIME_ALIASES = {
+    "audio/mp4a-latm": "audio/mp4",
+    "audio/x-m4a": "audio/mp4",
+    "audio/x-wav": "audio/wav",
+    "audio/x-aiff": "audio/aiff",
+}
 
 # Number of collision retries before the atomic commit's ``AlreadyExists`` is
 # surfaced as a 409.  Bounded so a hostile concurrent writer cannot spin.
@@ -77,7 +87,7 @@ def _resource_content_type(relative_path: str) -> str:
     if guessed in {"text/html", "application/xhtml+xml", "image/svg+xml"}:
         # Never let a raw Vault file be interpreted as active content.
         return "application/octet-stream"
-    return guessed
+    return _AUDIO_RESOURCE_MIME_ALIASES.get(guessed, guessed)
 
 
 def _content_disposition(relative_path: str) -> str:
@@ -160,7 +170,7 @@ class VaultService:
         self,
         root: str | os.PathLike[str],
         *,
-        max_file_bytes: int = 50 * 1024 * 1024,
+        max_file_bytes: int = 200 * 1024 * 1024,
         watcher_enabled: bool = True,
         watcher_debounce_ms: int = 200,
         event_callback: VaultEventCallback | None = None,
@@ -774,8 +784,10 @@ class VaultService:
         )
         directory = self.safety.resolve_existing_directory(requested, allow_root=True)
         entries: list[VaultFileEntry] = []
+        hash_budget = _DEFAULT_LIST_HASH_BUDGET
 
         def visit(current: Path) -> None:
+            nonlocal hash_budget
             self.safety.assert_safe_existing(
                 current, relative_path=self.safety.display_path(current)
             )
@@ -808,7 +820,8 @@ class VaultService:
                 elif stat.S_ISREG(info.st_mode):
                     size = info.st_size
                     digest: str | None = None
-                    if size <= self.max_file_bytes:
+                    if size <= self.max_file_bytes and hash_budget > 0:
+                        hash_budget -= 1
                         try:
                             digest, _ = _digest_file(child, max_bytes=self.max_file_bytes)
                         except FileTooLarge:

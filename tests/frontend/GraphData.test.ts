@@ -5,7 +5,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, fetchGraph, fetchLocalGraph, fetchTagGraph } from "../../apps/web/src/api/client";
-import { buildGraphologyGraph, graphStats } from "../../packages/graph/src";
+import { buildGraphologyGraph, connectedGraph, graphStats } from "../../packages/graph/src";
 import { edgeColor, edgeLineStyle, legend, nodeColor, THEMES } from "../../packages/graph/src/styles";
 import type { GraphEdge, GraphNode, GraphResponse } from "../../packages/protocol/src";
 
@@ -70,6 +70,13 @@ describe("Graph REST client", () => {
     vi.stubGlobal("fetch", mock);
     await fetchGraph();
     expect(String(mock.mock.calls[0]![0])).toBe("/api/v1/graph");
+  });
+
+  it("passes the content similarity switch to the graph API", async () => {
+    const mock = vi.fn(async (_input: RequestInfo | URL) => ok(response()));
+    vi.stubGlobal("fetch", mock);
+    await fetchGraph({ include_semantic: false });
+    expect(String(mock.mock.calls[0]![0])).toContain("include_semantic=false");
   });
 
   it("encodes local note path per segment and forwards depth/direction", async () => {
@@ -137,6 +144,14 @@ describe("Graphology model (pure conversion)", () => {
     expect(stats.broken).toBe(1);
     expect(stats.ambiguous).toBe(1);
   });
+
+  it("keeps only nodes with a drawable edge in the connected view", () => {
+    const payload = response();
+    const isolated = note("notes/isolated.md", "Isolated");
+    const focused = connectedGraph({ ...payload, nodes: [...payload.nodes, isolated] });
+    expect(focused.nodes.map((item) => item.id)).toEqual(payload.nodes.slice(0, 2).map((item) => item.id));
+    expect(focused.edges.map((item) => item.id)).toEqual(["link:#0", "link:#1"]);
+  });
 });
 
 describe("Graph styles", () => {
@@ -156,5 +171,6 @@ describe("Graph styles", () => {
     expect(edgeLineStyle({ kind: "link", raw: null, broken: false, ambiguous: true, candidates: [], section: null, block: null })).toBe("dotted");
     expect(edgeLineStyle({ kind: "tag", raw: null, broken: false, ambiguous: false, candidates: [], section: null, block: null })).toBe("dashed");
     expect(edgeLineStyle({ kind: "link", raw: null, broken: false, ambiguous: false, candidates: [], section: null, block: null })).toBe("solid");
+    expect(edgeColor({ kind: "semantic", raw: null, broken: false, ambiguous: false, candidates: [], section: null, block: null }, "light")).not.toBe(THEMES.light.link);
   });
 });

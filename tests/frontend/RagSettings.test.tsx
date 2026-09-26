@@ -230,6 +230,7 @@ describe("RagSettingsSection", () => {
     );
     expect(await screen.findByLabelText(/Reranker base URL/)).toBeInTheDocument();
     expect(screen.getByLabelText(/Reranker model/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Reranker API key/)).toBeInTheDocument();
   });
 
   it("tests the rerank endpoint and reports an offline result", async () => {
@@ -260,6 +261,107 @@ describe("RagSettingsSection", () => {
     await waitFor(() =>
       expect(screen.getByText(/retrieval still works/)).toBeInTheDocument(),
     );
+  });
+
+  it("keeps a stored reranker key when the field is untouched", async () => {
+    const enabled: RagConfiguration = {
+      ...baseRag,
+      reranker_enabled: true,
+      reranker_provider: "openai_compatible",
+      reranker_base_url: "http://127.0.0.1:8234/v1",
+      reranker_model: "Qwen3-Reranker-0.6B-Q8",
+      reranker_api_key_set: true,
+    };
+    const calls = stubFetch({
+      "/rag/index/status": () => json(STATUS),
+      "/settings/rag/reranker/test": () =>
+        json({ status: "connected", model: "Qwen3-Reranker-0.6B-Q8", message: "reranked 2 document(s)", results: [] }),
+      "/settings/rag": () => json(settingsFixture({ ...enabled, reranker_api_key_set: true })),
+    });
+    render(
+      <RagSettingsSection
+        rag={enabled}
+        current={settingsFixture({ ...enabled, reranker_api_key_set: true })}
+        busy={false}
+        onSaved={vi.fn()}
+        run={async operation => { await operation(); }}
+        say={vi.fn()}
+      />,
+    );
+    expect(screen.getByPlaceholderText(/Saved — leave blank to keep it/)).toBeInTheDocument();
+    const user = userEvent.setup();
+    // Probing with an untouched field must let the server reuse the stored key
+    // (the browser can never read it back).
+    await user.click(screen.getByRole("button", { name: /Test rerank/ }));
+    await waitFor(() => expect(calls.some(call => call.url.includes("/reranker/test"))).toBe(true));
+    const probe = JSON.parse(calls.find(call => call.url.includes("/reranker/test"))!.body);
+    expect("api_key" in probe).toBe(false);
+    await user.click(screen.getByRole("button", { name: /Save RAG settings/ }));
+    await waitFor(() => expect(calls.some(call => call.method === "PATCH")).toBe(true));
+    const body = JSON.parse(calls.find(call => call.method === "PATCH")!.body);
+    expect("reranker_api_key" in body.rag).toBe(false);
+  });
+
+  it("sends a typed reranker key to both the probe and the save", async () => {
+    const enabled: RagConfiguration = {
+      ...baseRag,
+      reranker_enabled: true,
+      reranker_provider: "openai_compatible",
+      reranker_base_url: "http://127.0.0.1:8234/v1",
+      reranker_model: "Qwen3-Reranker-0.6B-Q8",
+    };
+    const calls = stubFetch({
+      "/rag/index/status": () => json(STATUS),
+      "/settings/rag/reranker/test": () =>
+        json({ status: "connected", model: "Qwen3-Reranker-0.6B-Q8", message: "reranked 2 document(s)", results: [] }),
+      "/settings/rag": () => json(settingsFixture(enabled)),
+    });
+    render(
+      <RagSettingsSection
+        rag={enabled}
+        current={settingsFixture(enabled)}
+        busy={false}
+        onSaved={vi.fn()}
+        run={async operation => { await operation(); }}
+        say={vi.fn()}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText(/Reranker API key/), "Bluehawk123");
+    await user.click(screen.getByRole("button", { name: /Test rerank/ }));
+    await waitFor(() => expect(calls.some(call => call.url.includes("/reranker/test"))).toBe(true));
+    const probe = JSON.parse(calls.find(call => call.url.includes("/reranker/test"))!.body);
+    expect(probe.api_key).toBe("Bluehawk123");
+    await user.click(screen.getByRole("button", { name: /Save RAG settings/ }));
+    await waitFor(() => expect(calls.some(call => call.method === "PATCH")).toBe(true));
+    const body = JSON.parse(calls.find(call => call.method === "PATCH")!.body);
+    expect(body.rag.reranker_api_key).toBe("Bluehawk123");
+    expect(body.rag.reranker_base_url).toBe("http://127.0.0.1:8234/v1");
+  });
+
+  it("edits the embedding dimension instead of keeping the 256 default", async () => {
+    const calls = stubFetch({
+      "/rag/index/status": () => json(STATUS),
+      "/settings/rag": () => json(settingsFixture(baseRag)),
+    });
+    render(
+      <RagSettingsSection
+        rag={{ ...baseRag, embedding_provider: "openai_compatible", embedding_dimension: 256 }}
+        current={settingsFixture(baseRag)}
+        busy={false}
+        onSaved={vi.fn()}
+        run={async operation => { await operation(); }}
+        say={vi.fn()}
+      />,
+    );
+    const user = userEvent.setup();
+    const field = screen.getByLabelText(/Embedding dimension/);
+    await user.clear(field);
+    await user.type(field, "0");
+    await user.click(screen.getByRole("button", { name: /Save RAG settings/ }));
+    await waitFor(() => expect(calls.some(call => call.method === "PATCH")).toBe(true));
+    const body = JSON.parse(calls.find(call => call.method === "PATCH")!.body);
+    expect(body.rag.embedding_dimension).toBe(0);
   });
 
   it("shows which vector kernel serves scans", async () => {
